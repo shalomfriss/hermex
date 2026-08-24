@@ -18,6 +18,7 @@ export default defineConfig({
   outputDir: "test-results",
   use: {
     baseURL,
+    channel: process.env.HERMES_E2E_BROWSER_CHANNEL || undefined,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     video: "retain-on-failure",

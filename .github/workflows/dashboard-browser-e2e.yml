@@ -56,13 +56,13 @@ jobs:
             exit 1
           fi
 
-      - name: Install Chromium and system dependencies
-        run: npx playwright install --with-deps chromium
-
       - name: Run production dashboard browser acceptance
         working-directory: web
         env:
           CI: 'true'
+          # ubuntu-latest ships Google Chrome. Use that maintained standard-
+          # runner browser instead of downloading an unbounded CDN payload.
+          HERMES_E2E_BROWSER_CHANNEL: chrome
           PYTHON: ../.venv/bin/python
           OPENROUTER_API_KEY: ''
           OPENAI_API_KEY: ''

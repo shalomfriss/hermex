@@ -172,12 +172,16 @@ test("authorization denial, provider outage, expiry, and logout fail safely", as
   await page.context().clearCookies();
   await page.getByLabel("Username").fill(USERNAME);
   await page.getByLabel("Password").fill(PASSWORD);
-  await page.getByRole("button", { name: /sign in/i }).click();
+  await page.getByLabel("Password").press("Enter");
   await expect(page).toHaveURL(/\/system\?from=expiry$/);
 
   const openNavigation = page.getByRole("button", { name: /open navigation/i });
-  if (await openNavigation.isVisible()) await openNavigation.click();
-  await page.getByRole("button", { name: "Log out" }).click();
+  if (await openNavigation.isVisible()) {
+    await openNavigation.focus();
+    await page.keyboard.press("Enter");
+  }
+  await page.getByRole("button", { name: "Log out" }).focus();
+  await page.keyboard.press("Enter");
   await expect(page).toHaveURL(/\/login/);
   expect((await (await page.request.get("/__e2e/state")).json()).logout_count).toBeGreaterThan(0);
   expect((await page.request.get("/api/auth/me")).status()).toBe(401);
