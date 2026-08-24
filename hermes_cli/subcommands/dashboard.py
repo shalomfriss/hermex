@@ -227,7 +227,7 @@ def build_dashboard_parser(
     )
     dashboard_sso_check_parser = sso_subparsers.add_parser(
         "check",
-        help="Check discovery, endpoints, algorithms, callback, and policy syntax",
+        help="Gate readiness on discovery, live JWKS, callback, and policy checks",
     )
     dashboard_sso_check_parser.add_argument(
         "--json", action="store_true", help="Print a machine-readable JSON result"
