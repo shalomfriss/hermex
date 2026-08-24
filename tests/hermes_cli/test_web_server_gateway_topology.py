@@ -507,10 +507,7 @@ class TestStatusEndpointTopology:
         platforms = resp.json()["gateway_platforms"]
         assert "coder:telegram" not in platforms
 
-    def test_profile_names_and_mode_public_when_auth_gated(self, monkeypatch):
-        # Profile NAMES + gateway_mode are low-sensitivity product surface: the
-        # Hermes Cloud Portal reads /api/status over the network (a gated bind)
-        # to render the profile list, so they must survive the auth gate.
+    def test_profile_names_and_mode_are_private_when_auth_gated(self, monkeypatch):
         monkeypatch.setattr(
             web_server, "_collect_profile_gateway_topology",
             lambda: {
@@ -523,14 +520,7 @@ class TestStatusEndpointTopology:
         try:
             resp = self.client.get("/api/status")
             assert resp.status_code == 200
-            data = resp.json()
-            assert data["profiles"] == ["default", "coder"]
-            assert data["gateway_mode"] == "multiplex"
-            # But the per-gateway detail (host ports = recon) stays gated,
-            # alongside hermes_home / gateway_pid.
-            assert "gateways" not in data
-            assert "hermes_home" not in data
-            assert "gateway_pid" not in data
+            assert resp.json() == {"ok": True, "auth_required": True}
         finally:
             monkeypatch.setattr(
                 web_server.app.state, "auth_required", False, raising=False

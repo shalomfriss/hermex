@@ -189,7 +189,8 @@ Then in Desktop enter the **Remote URL** (e.g. `http://VM_IP:9119`) and **Sign i
 From any machine, check that the dashboard advertises the username/password provider:
 
 ```bash
-curl -s http://VM_IP:9119/api/status | jq '.auth_required, .auth_providers'
+curl -s http://VM_IP:9119/api/status | jq '.auth_required'
+curl -s http://VM_IP:9119/api/auth/providers | jq '[.providers[].name]'
 # true
 # ["basic"]
 ```
@@ -199,7 +200,7 @@ curl -s http://VM_IP:9119/api/status | jq '.auth_required, .auth_providers'
 - `auth_required: true` but no `"basic"` provider → the username/password env vars aren't loaded. Fix those first.
 :::
 
-If `/api/status` shows the gate is on with the `"basic"` provider and Desktop *still* fails to connect after signing in, the issue is past basic setup — grab a fresh `desktop.log` (Settings → Gateways → Open logs) plus the dashboard's logs from the same retry window and look for the `/api/ws` close code (4403 = chat WS rejected by the request guard, e.g. Host/peer mismatch; 4401 = the WS ticket didn't authenticate).
+If `/api/status` shows the gate is on and `/api/auth/providers` lists the `"basic"` provider but Desktop *still* fails to connect after signing in, the issue is past basic setup — grab a fresh `desktop.log` (Settings → Gateways → Open logs) plus the dashboard's logs from the same retry window and look for the `/api/ws` close code (4403 = chat WS rejected by the request guard, e.g. Host/peer mismatch; 4401 = the WS ticket didn't authenticate).
 
 ### Config
 
@@ -433,7 +434,15 @@ a chat under the selected profile.
 
 ### GET /api/status
 
-Returns agent version, gateway status, platform states, and active session count.
+Unauthenticated requests return the exact minimal liveness shape
+`{"ok": true, "auth_required": true|false}`. No version, install identity,
+profile, provider, host-capacity, or component metadata is exposed.
+
+Authenticated requests return the operator inventory: agent version, gateway
+status, platform states, active session count, profile topology, and resource
+health. Configuration schemas, model metadata, themes, and plugin manifests are
+also authenticated endpoints; the server-rendered login page and its static
+assets do not depend on them.
 
 The response also carries two advisory resource blocks (they never affect the
 `components`/`overall` health verdict):
@@ -455,8 +464,7 @@ The response also carries two advisory resource blocks (they never affect the
   under 1 GB headroom).
 
 Both collectors are fail-safe: any sampling error degrades the block to
-`{"pressure": "unknown"}` instead of failing the status endpoint. The numbers
-are coarse (whole MB, whole-percent) since `/api/status` is public.
+`{"pressure": "unknown"}` instead of failing the authenticated status response.
 
 ### GET /api/sessions
 
@@ -710,7 +718,8 @@ hermes dashboard --host 0.0.0.0 --port 9119 --no-open
 **3. Log in.** Open `http://<host>:9119/`, you'll be bounced to `/login`. Click **Sign in with Nous Research** → authenticate at the Portal → land back on the authenticated dashboard. Verify the gate from any machine:
 
 ```bash
-curl -s http://<host>:9119/api/status | jq '.auth_required, .auth_providers'
+curl -s http://<host>:9119/api/status | jq '.auth_required'
+curl -s http://<host>:9119/api/auth/providers | jq '[.providers[].name]'
 # true
 # ["nous"]
 ```
@@ -789,7 +798,8 @@ hermes dashboard --host 0.0.0.0 --port 9119 --no-open
 **3. Log in.** Open `http://<host>:9119/`, you'll be bounced to `/login` — a **credential form** (not a "Sign in with X" button). Enter `admin` / your password → land on the authenticated dashboard. Verify the gate from any machine:
 
 ```bash
-curl -s http://<host>:9119/api/status | jq '.auth_required, .auth_providers'
+curl -s http://<host>:9119/api/status | jq '.auth_required'
+curl -s http://<host>:9119/api/auth/providers | jq '[.providers[].name]'
 # true
 # ["basic"]
 ```
@@ -1030,8 +1040,10 @@ HERMES_DASHBOARD_OAUTH_CLIENT_ID=agent:test \
 # then just:
 hermes dashboard --host 0.0.0.0
 
-# Hit /api/status to see the gate state:
-curl -s http://127.0.0.1:9119/api/status | jq '.auth_required, .auth_providers'
+# Hit the minimal status route for the gate state and the dedicated login
+# bootstrap route for the interactive provider list:
+curl -s http://127.0.0.1:9119/api/status | jq '.auth_required'
+curl -s http://127.0.0.1:9119/api/auth/providers | jq '[.providers[].name]'
 # true
 # ["nous"]
 ```
@@ -1092,8 +1104,8 @@ Instead of the in-app setting, you can point the desktop at a backend with an en
 ### Troubleshooting
 
 - **"Remote gateway incomplete"** — you haven't entered a remote URL.
-- **Sign-in fails with 401 / "Invalid credentials"** — the username or password doesn't match the backend's `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` / `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD`. The backend returns the same generic error for unknown user and wrong password, so check both. Confirm the gate with `curl -s http://<host>:9119/api/status | jq '.auth_required, .auth_providers'` — it should report `true` and include `"basic"`.
-- **No "Sign in" button — it asks for a session token instead** — the username/password provider isn't active (`/api/status` won't list `"basic"`). Make sure the username and a password (or password hash) are set and the dashboard process loaded them.
+- **Sign-in fails with 401 / "Invalid credentials"** — the username or password doesn't match the backend's `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` / `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD`. The backend returns the same generic error for unknown user and wrong password, so check both. Confirm `/api/status` reports `auth_required: true` and `/api/auth/providers` lists `"basic"`.
+- **No "Sign in" button — it asks for a session token instead** — the username/password provider isn't active. Check the dedicated `/api/auth/providers` login-bootstrap endpoint for `"basic"`, then make sure the username and a password (or password hash) are set and the dashboard process loaded them.
 - **Signed out on every restart** — set `HERMES_DASHBOARD_BASIC_AUTH_SECRET` to a stable value; otherwise the signing key is regenerated per boot.
 - **Connection refused / times out** — the backend bound to `127.0.0.1` (the default) instead of a reachable address, or a firewall/VPN is blocking the port. Bind to `0.0.0.0` or the tailscale IP and open the port to your trusted network.
 

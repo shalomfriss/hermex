@@ -867,9 +867,8 @@ async def _token_auth_seam(request: Request, call_next):
 
 # ---------------------------------------------------------------------------
 # Dashboard component health — in-process error/self-test counters that feed
-# the ``components`` dict on ``/api/status``.  That endpoint is in
-# ``PUBLIC_API_PATHS``, so everything exported from here must be counts and
-# enums only: no exception messages, no request paths, no tokens.
+# the authenticated ``components`` dict on ``/api/status``. Keep the exported
+# snapshot free of exception messages, request paths, and tokens.
 # ---------------------------------------------------------------------------
 
 _DASHBOARD_HEALTH_WINDOW_SECONDS = 300.0
@@ -944,6 +943,58 @@ async def _dashboard_health_middleware(request: Request, call_next):
         raise
     if response.status_code >= 500:
         DASHBOARD_HEALTH.record_error(f"http_{response.status_code}", request.url.path)
+    return response
+
+
+_DASHBOARD_CONTENT_SECURITY_POLICY = "; ".join((
+    "default-src 'self'",
+    "base-uri 'none'",
+    "object-src 'none'",
+    "frame-ancestors 'none'",
+    "form-action 'self'",
+    "script-src 'self' 'unsafe-inline'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "font-src 'self' data:",
+    "connect-src 'self' ws: wss:",
+    "worker-src 'self' blob:",
+    "manifest-src 'self'",
+))
+_DASHBOARD_PERMISSIONS_POLICY = (
+    "camera=(), microphone=(), geolocation=(), payment=(), usb=(), "
+    "serial=(), bluetooth=(), browsing-topics=()"
+)
+
+
+@app.middleware("http")
+async def _dashboard_security_headers(request: Request, call_next):
+    """Apply one enterprise response policy to routes, mounts, and errors."""
+    response = await call_next(request)
+    headers = response.headers
+    headers["Content-Security-Policy"] = _DASHBOARD_CONTENT_SECURITY_POLICY
+    headers["X-Content-Type-Options"] = "nosniff"
+    headers["X-Frame-Options"] = "DENY"
+    headers["Referrer-Policy"] = "no-referrer"
+    headers["Permissions-Policy"] = _DASHBOARD_PERMISSIONS_POLICY
+    # Uvicorn rewrites the ASGI scheme only for traffic from its configured
+    # trusted proxy peers. Reading the normalized request URL avoids trusting
+    # an arbitrary client-supplied X-Forwarded-Proto header here.
+    if request.url.scheme == "https":
+        headers["Strict-Transport-Security"] = (
+            "max-age=31536000; includeSubDomains"
+        )
+    elif "strict-transport-security" in headers:
+        del headers["Strict-Transport-Security"]
+
+    if (
+        "cache-control" not in headers
+        and (
+            request.url.path.startswith("/api/")
+            or response.status_code >= 400
+            or response.headers.get("content-type", "").startswith("text/html")
+        )
+    ):
+        headers["Cache-Control"] = "no-store"
     return response
 
 
@@ -3466,12 +3517,8 @@ async def get_ssh_ownership(request: Request):
 
 @app.get("/api/health")
 async def get_health():
-    """Lightweight process liveness for desktop/backend readiness probes."""
-    return {
-        "ok": True,
-        "version": __version__,
-        "auth_required": bool(getattr(app.state, "auth_required", False)),
-    }
+    """Minimal process liveness with no deployment fingerprinting metadata."""
+    return {"ok": True}
 
 
 _PROFILE_PLATFORM_STATUS_KEY_RE = re.compile(
@@ -3556,7 +3603,20 @@ def _merge_profile_gateway_platforms(
 
 
 @app.get("/api/status")
-async def get_status(profile: Optional[str] = None):
+async def get_status(request: Request, profile: Optional[str] = None):
+    auth_required = bool(getattr(app.state, "auth_required", False))
+    status_authenticated = (
+        getattr(request.state, "session", None) is not None
+        if auth_required
+        else _has_valid_session_token(request)
+    )
+    if not status_authenticated:
+        # NAS and ordinary uptime probes need a stable 200, not the operator
+        # inventory. Keep the anonymous contract exact so future fields cannot
+        # accidentally expose versions, profiles, providers, host capacity,
+        # install identity, or component state.
+        return {"ok": True, "auth_required": auth_required}
+
     status_scope = None
     requested_profile = (profile or "").strip()
     # Plain /api/status stays the machine-level public liveness probe. The
@@ -3752,7 +3812,6 @@ async def get_status(profile: Optional[str] = None):
         # and which providers are registered so ``hermes status`` and the
         # SPA's StatusPage can show "OAuth gate ON via Nous Research" or
         # "loopback only — no auth gate" with no extra round trips.
-        auth_required = bool(getattr(app.state, "auth_required", False))
         auth_providers: list[str] = []
         # RFC 8252 native-app capability advertisement. The desktop reads this
         # to decide whether it can use the system-browser + loopback + PKCE
@@ -3795,10 +3854,8 @@ async def get_status(profile: Optional[str] = None):
         except Exception:
             nous_session_valid = "unknown"
 
-        # Always-public liveness + auth-gate shape. Safe for external uptime
-        # probes (NAS's wildcard-subdomain liveness probe), the SPA's pre-login
-        # bootstrap, and anyone who can curl the host — i.e. exactly the audience
-        # ``PUBLIC_API_PATHS`` documents this endpoint as serving.
+        # Authenticated operator inventory. The exact anonymous contract returns
+        # before any of these collectors run.
         status = {
             "version": __version__,
             "release_date": __release_date__,
@@ -3831,9 +3888,7 @@ async def get_status(profile: Optional[str] = None):
         if install_id:
             status["install_id"] = install_id
 
-        # Component-level health rollup. Counts and status enums only — this
-        # payload is public (PUBLIC_API_PATHS), so no messages, paths, or
-        # other detail that could carry secrets. The storage probe reuses the
+        # Component-level health rollup. The storage probe reuses the
         # gateway readiness state_db check (read-only, 1s-bounded) in an
         # executor so a wedged DB can't stall the event loop.
         components: Dict[str, Any] = {
@@ -3877,8 +3932,7 @@ async def get_status(profile: Optional[str] = None):
         # Memory-pressure rollup (NS-656). Distilled from the gateway's
         # 30s loop heartbeat + lifecycle sentinel — two small file reads,
         # no gateway IPC. Coarse MB numbers/enums/booleans only: this
-        # endpoint is public (PUBLIC_API_PATHS), same disclosure class as
-        # nous_session_valid above. Deliberately NOT folded into
+        # endpoint is authenticated. Deliberately NOT folded into
         # components/overall — memory pressure is advisory (toast/notice
         # material), not a liveness verdict, and flipping `overall` to
         # "degraded" on it would page NAS's availability sweep for a
@@ -3941,30 +3995,18 @@ async def get_status(profile: Optional[str] = None):
         # listen on.  Enumerating profiles walks the filesystem and probes the
         # process table, so keep it off the event loop.
         #
-        # Split by sensitivity: profile NAMES (``profiles``) and the gateway
-        # ``gateway_mode`` are low-sensitivity PRODUCT surface — Hermes Cloud
-        # renders the profile list in the Portal, which reads this endpoint over
-        # the network (a gated bind), so they must survive the auth gate. The
-        # per-gateway ``gateways[]`` detail carries host ports (deployment
-        # recon), so it stays gated with the host paths / PID below.
+        # This topology belongs to the authenticated operator response. The
+        # anonymous liveness contract never reaches this collector.
         # (``topology`` was already fetched above, before the platform rollup,
         # so the per-profile platform merge could use it — the TTL cache makes
         # the earlier fetch the only real scan either way.)
         status["profiles"] = topology["profiles"]
         status["gateway_mode"] = topology["gateway_mode"]
 
-        # Absolute host paths, the gateway PID, the internal gateway health
-        # URL, and per-gateway ports are deployment recon a liveness probe never
-        # needs. ``/api/status`` is in ``PUBLIC_API_PATHS`` so it bypasses
-        # dashboard auth; on a network-exposed (gated) bind that means *any*
-        # unauthenticated caller reaches it, and leaking host metadata there
-        # contradicts the allowlist's own contract ("version, gateway state,
-        # active session count, and the dashboard auth-gate shape. No bodies, no
-        # session content, no secrets"). Surface this detail only on a loopback
-        # / ``--insecure`` bind, where the dashboard is local-only and the
-        # caller is already inside the trust envelope — the same loopback/gated
-        # split ``should_require_auth`` draws.
-        if not auth_required:
+        # Absolute host paths, process identity, internal health URLs, and
+        # per-gateway ports are operator inventory. They are safe here because
+        # anonymous callers returned before status collection began.
+        if status_authenticated:
             status.update({
                 "hermes_home": str(get_hermes_home()),
                 "config_path": str(get_config_path()),
@@ -19332,6 +19374,7 @@ def start_server(
 
     config = uvicorn.Config(
         app, host=host, port=port, log_level="warning",
+        server_header=False,
         # proxy_headers defaults to False so _ws_client_is_allowed sees
         # the real connection peer rather than X-Forwarded-For's rewritten
         # value (which would defeat the loopback gate when behind a reverse

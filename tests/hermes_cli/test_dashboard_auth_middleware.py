@@ -3,7 +3,7 @@
 Uses ``StubAuthProvider`` so the OAuth round trip can complete in-process
 without any external IDP.  Exercises:
 
-  * `/api/status` flips from public (loopback) to gated (auth_required)
+  * `/api/status` keeps a minimal public shape while its inventory is gated
   * `/` redirects to /login when no cookie present
   * `/api/auth/providers` is the public bootstrap endpoint
   * `/login` renders HTML listing all providers
@@ -84,40 +84,25 @@ def test_gated_status_is_public(gated_app):
     (``fly-provider.ts`` ``getInstanceRuntimeStatus``) hits
     ``/api/status`` without a cookie as its sole liveness probe. A 401
     here surfaces every healthy agent as STARTING/down in the portal
-    UI. The endpoint returns only version + gateway/auth-gate metadata
-    (no user data, no session content), so it stays in the shared
+    UI. The endpoint returns only an ok bit + auth-gate boolean
+    (no version, provider, host, or component inventory), so it stays in the shared
     ``PUBLIC_API_PATHS`` allowlist under both the legacy ``_SESSION_TOKEN``
     gate and the OAuth gate.
 
-    The body also reports the gate's shape (``auth_required``,
-    ``auth_providers``) so the SPA's StatusPage and external monitors
-    can distinguish loopback / gated / no-providers without a separate
-    round trip.
+    The body reports only whether the gate is required.
     """
     r = gated_app.get("/api/status")
     assert r.status_code == 200, (
         f"Expected 200, got {r.status_code}: {r.text}"
     )
-    body = r.json()
-    assert body["auth_required"] is True
-    assert "version" in body
-    assert "gateway_state" in body
+    assert r.json() == {"ok": True, "auth_required": True}
 
 
 @pytest.mark.parametrize("path", [
     "/api/health",
-    "/api/config/defaults",
-    "/api/config/schema",
-    "/api/model/info",
-    "/api/dashboard/themes",
-    "/api/dashboard/plugins",
 ])
 def test_other_public_api_paths_are_public_under_gate(gated_app, path):
-    """The remaining ``PUBLIC_API_PATHS`` entries must also bypass the
-    gate. They're documented as non-sensitive read-only endpoints that
-    the SPA pre-loads before login (themes, config schema, model
-    metadata). A 401 / 302-to-login here would block the dashboard
-    shell from rendering pre-auth.
+    """The minimal health route must bypass the gate.
 
     Accept any non-auth-failure status: 200 when the route succeeds,
     or any route-specific error (e.g. 400 / 404 / 500 from a missing

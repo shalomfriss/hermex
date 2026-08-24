@@ -6986,8 +6986,8 @@ def get_nous_session_validity() -> str:
 
     Determinable with NO working token — it reads local auth-store state only,
     which is exactly the condition a dead hosted box is in. This function is
-    called by the frequently-polled public ``/api/status`` endpoint, so it must
-    never resolve credentials or perform an OAuth refresh.
+    called by the frequently-polled authenticated ``/api/status`` inventory,
+    so it must never resolve credentials or perform an OAuth refresh.
 
     ANTI-FLAP CONTRACT: only a *terminal* failure maps to "terminal". A normal
     mid-rotation blip, a transient network error, or a merely-expiring token
