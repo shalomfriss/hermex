@@ -98,6 +98,10 @@ else
   exit 1
 fi
 
+# Local integration work must retain enough space for per-file subprocesses,
+# bytecode, and temporary test artifacts. Fail before those writes can turn a
+# low-capacity host into an ENOSPC incident. CI runners use the same floor.
+"$PYTHON" "$SCRIPT_DIR/ci/check_disk_headroom.py" --path "$REPO_ROOT"
 
 # ── Live-gateway plugin (computed before we drop env) ───────────────────────
 EXTRA_PYTHONPATH=""
