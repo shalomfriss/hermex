@@ -17,7 +17,7 @@ jobs:
     # This fork uses the standard hosted runner so CI is available without
     # organization-scoped larger-runner labels.
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -94,9 +94,9 @@ jobs:
           source .venv/bin/activate
           scripts/run_tests.sh
         env:
-          # Match the four cores on GitHub's standard Ubuntu runner. Higher
-          # values only add contention and memory pressure in this fork.
-          HERMES_TEST_WORKERS: 4
+          # Two workers per core keeps the standard runner busy while slower
+          # files wait on subprocesses and filesystem operations.
+          HERMES_TEST_WORKERS: 8
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
