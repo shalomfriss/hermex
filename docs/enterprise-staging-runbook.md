@@ -187,6 +187,12 @@ python3 scripts/enterprise_staging.py start --config "$STATE_ROOT/deployment.jso
 
 The archive is mode 0600 and excludes logs, caches, skills, and audio caches. Copy it only into an encrypted, access-controlled backup system. Set and test retention; do not upload it to the board or Git.
 
+Managed service wrappers hold a shared runtime lock for their full lifetime;
+backup and restore require the exclusive form of that lock and also verify all
+three local listeners are closed. A launchd restart therefore cannot race a
+state snapshot or replacement: it is deferred until maintenance releases the
+lock.
+
 Restore only during a stopped maintenance window:
 
 ```bash

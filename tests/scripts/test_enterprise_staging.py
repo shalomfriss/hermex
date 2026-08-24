@@ -13,6 +13,7 @@ import pytest
 
 from scripts.enterprise_staging import (
     _probe,
+    _maintenance_lock,
     _service_command,
     _validate_install_prerequisites,
     DeploymentConfig,
@@ -105,7 +106,7 @@ def test_launchd_jobs_restart_services_without_embedding_secrets(tmp_path: Path)
 def test_caddy_routes_idp_and_dashboard_with_external_forwarding(tmp_path: Path):
     text = build_caddyfile(config(tmp_path))
 
-    assert ":19137" in text
+    assert "127.0.0.1:19137" in text
     assert "path /realms/* /resources/*" in text
     assert "reverse_proxy @keycloak 127.0.0.1:18081" in text
     assert "reverse_proxy 127.0.0.1:19138" in text
@@ -113,6 +114,17 @@ def test_caddy_routes_idp_and_dashboard_with_external_forwarding(tmp_path: Path)
     assert "X-Forwarded-Host hermes-test.example.test" in text
     assert "header_down -Server" in text
     assert "auto_https off" in text
+
+
+def test_keycloak_is_bound_to_loopback(tmp_path: Path):
+    cfg = config(tmp_path)
+    cfg.keycloak_secret_file.parent.mkdir(parents=True)
+    cfg.keycloak_secret_file.write_text("KC_BOOTSTRAP_ADMIN_PASSWORD=random\n")
+    cfg.keycloak_secret_file.chmod(0o600)
+
+    command, _cwd, _env = _service_command(cfg, "keycloak")
+
+    assert "--http-host=127.0.0.1" in command
 
 
 def test_config_rejects_unsafe_public_url_and_port_collisions(tmp_path: Path):
@@ -175,6 +187,16 @@ def test_backup_rejects_symlinks_in_secret_bearing_state(tmp_path: Path):
 
     with pytest.raises(ValueError, match="symlink"):
         create_backup(cfg, cfg.state_root / "backups" / "snapshot.tar.gz")
+
+
+def test_backup_refuses_while_a_managed_service_holds_the_runtime_lock(tmp_path: Path):
+    cfg = config(tmp_path)
+    cfg.hermes_home.mkdir(parents=True)
+    cfg.keycloak_data.mkdir(parents=True)
+
+    with _maintenance_lock(cfg, exclusive=False):
+        with pytest.raises(RuntimeError, match="managed service is active"):
+            create_backup(cfg, cfg.state_root / "backups" / "snapshot.tar.gz")
 
 
 def test_restore_rejects_wrong_deployment_and_preserves_live_state(tmp_path: Path):

@@ -10,7 +10,9 @@ wrapper that needs them.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
+import fcntl
 import io
 import json
 import logging
@@ -216,7 +218,7 @@ def build_caddyfile(cfg: DeploymentConfig) -> str:
     auto_https off
 }}
 
-:{cfg.proxy_port} {{
+127.0.0.1:{cfg.proxy_port} {{
     log {{
         output discard
     }}
@@ -345,7 +347,32 @@ def _assert_services_stopped(cfg: DeploymentConfig) -> None:
         )
 
 
-def create_backup(cfg: DeploymentConfig, destination: Path) -> Path:
+@contextlib.contextmanager
+def _maintenance_lock(cfg: DeploymentConfig, *, exclusive: bool):
+    cfg.state_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path = cfg.state_root / "maintenance.lock"
+    descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    os.chmod(path, 0o600)
+    operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+    try:
+        try:
+            fcntl.flock(descriptor, operation | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            message = (
+                "managed service is active; stop the stack before backup/restore"
+                if exclusive
+                else "staging maintenance is active; service start deferred"
+            )
+            raise RuntimeError(message) from exc
+        yield
+    finally:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+
+
+def _create_backup_locked(cfg: DeploymentConfig, destination: Path) -> Path:
     cfg.validate()
     _assert_services_stopped(cfg)
     for required in (cfg.hermes_home, cfg.keycloak_data):
@@ -402,6 +429,11 @@ def create_backup(cfg: DeploymentConfig, destination: Path) -> Path:
     return destination
 
 
+def create_backup(cfg: DeploymentConfig, destination: Path) -> Path:
+    with _maintenance_lock(cfg, exclusive=True):
+        return _create_backup_locked(cfg, destination)
+
+
 def _validate_archive(archive: tarfile.TarFile, cfg: DeploymentConfig) -> None:
     members = archive.getmembers()
     names = [member.name.rstrip("/") for member in members]
@@ -450,7 +482,7 @@ def _make_private(root: Path) -> None:
         os.chmod(path, 0o700 if path.is_dir() else 0o600)
 
 
-def restore_backup(cfg: DeploymentConfig, source: Path) -> None:
+def _restore_backup_locked(cfg: DeploymentConfig, source: Path) -> None:
     cfg.validate()
     _assert_services_stopped(cfg)
     staging = Path(tempfile.mkdtemp(prefix=".restore.", dir=cfg.state_root))
@@ -499,6 +531,11 @@ def restore_backup(cfg: DeploymentConfig, source: Path) -> None:
         shutil.rmtree(originals, ignore_errors=True)
 
 
+def restore_backup(cfg: DeploymentConfig, source: Path) -> None:
+    with _maintenance_lock(cfg, exclusive=True):
+        _restore_backup_locked(cfg, source)
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -542,6 +579,7 @@ def _service_command(
             [
                 str(cfg.keycloak_command),
                 "start-dev",
+                "--http-host=127.0.0.1",
                 f"--http-port={cfg.keycloak_port}",
                 "--import-realm",
             ],
@@ -615,7 +653,7 @@ def _service_logger(cfg: DeploymentConfig, service: str) -> logging.Logger:
     return logger
 
 
-def run_service(cfg: DeploymentConfig, service: str) -> int:
+def _run_service_locked(cfg: DeploymentConfig, service: str) -> int:
     cfg.validate()
     command, cwd, env = _service_command(cfg, service)
     secret_values = [
@@ -660,6 +698,11 @@ def run_service(cfg: DeploymentConfig, service: str) -> int:
                 process.kill()
                 process.wait(timeout=5)
         process.stdout.close()
+
+
+def run_service(cfg: DeploymentConfig, service: str) -> int:
+    with _maintenance_lock(cfg, exclusive=False):
+        return _run_service_locked(cfg, service)
 
 
 def _probe(url: str, expected: Iterable[int] = (200,)) -> dict[str, object]:
