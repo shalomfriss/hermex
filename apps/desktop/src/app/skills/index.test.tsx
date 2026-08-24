@@ -8,6 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as HermesApi from '@/hermes'
 import { queryClient } from '@/lib/query-client'
 
+import { SkillsView } from './index'
+
 const getSkills = vi.fn()
 const getToolsets = vi.fn()
 const setSkillEnabled = vi.fn()
@@ -65,7 +67,6 @@ function toolset(overrides: Record<string, unknown> = {}) {
 }
 
 async function renderSkills() {
-  const { SkillsView } = await import('./index')
   let result: ReturnType<typeof render>
   await act(async () => {
     result = render(
@@ -156,7 +157,6 @@ describe('SkillsView toolset management', () => {
       ]
     })
 
-    const { SkillsView } = await import('./index')
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
@@ -202,7 +202,6 @@ describe('SkillsView toolset management', () => {
       }
     ])
 
-    const { SkillsView } = await import('./index')
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
@@ -246,7 +245,6 @@ describe('SkillsView toolset management', () => {
       }
     ])
 
-    const { SkillsView } = await import('./index')
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
@@ -302,7 +300,6 @@ describe('SkillsView toolset management', () => {
 
     // Embedded mode drives tabs through local state (the route hooks are
     // mocked here), starting on Skills: the picker mounts with the tab.
-    const { SkillsView } = await import('./index')
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
@@ -361,7 +358,6 @@ describe('SkillsView toolset management', () => {
     // the live surface pointed at ITS backend — the reads must carry the
     // (connection, profile) pin, not a bare profile name that would resolve
     // against the ACTIVE gateway (the wrong-machine bug).
-    const { SkillsView } = await import('./index')
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
