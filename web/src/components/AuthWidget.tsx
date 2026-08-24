@@ -5,10 +5,8 @@
  * Renders nothing in loopback / --insecure mode. In gated mode, fetches
  * /api/auth/me on mount and surfaces:
  *
- *   - the user_id (truncated to 14 chars + ellipsis) since the Nous Portal
- *     contract V1 doesn't emit email/display_name claims (Contract Anchor
- *     C4 in the plan; the API responds with empty strings for those
- *     fields, so we use user_id as the display value)
+ *   - a friendly display name/email when available, otherwise a generic
+ *     account label (opaque provider subject IDs are never rendered)
  *   - the provider's display_name (looked up from /api/auth/providers,
  *     defaults to the bare provider key)
  *   - a logout button that POSTs /auth/logout and full-page-navigates to
@@ -23,27 +21,22 @@
  *     so the user knows the widget tried.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { ApiError, api, type AuthMeResponse } from "@/lib/api";
+import { authState } from "@/lib/auth-state";
 import { cn } from "@/lib/utils";
 import { LogOut } from "lucide-react";
 
 interface AuthWidgetProps {
   className?: string;
+  collapsed?: boolean;
 }
 
-/** Truncate ``user_id`` to fit a small UI without revealing the full
- *  opaque identifier. 14 chars is enough to disambiguate users in a
- *  small org and short enough to fit a single sidebar row. */
-function truncateUserId(id: string): string {
-  if (id.length <= 14) return id;
-  return `${id.slice(0, 14)}…`;
-}
-
-export function AuthWidget({ className }: AuthWidgetProps) {
+export function AuthWidget({ className, collapsed = false }: AuthWidgetProps) {
   const [me, setMe] = useState<AuthMeResponse | null>(null);
   const [hidden, setHidden] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const globalAuth = useSyncExternalStore(authState.subscribe, authState.getSnapshot);
 
   // Loopback / --insecure mode: the auth gate is off, so /api/auth/me is a
   // guaranteed 401. Don't fire the request at all — it only produces console
@@ -59,6 +52,11 @@ export function AuthWidget({ className }: AuthWidgetProps) {
       .then((data) => {
         if (cancelled) return;
         setMe(data);
+        authState.authenticated({
+          displayName: data.display_name || data.email || "Signed-in account",
+          providerLabel: data.provider_display_name || data.provider,
+          organizationLabel: data.organization_label,
+        });
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -98,6 +96,8 @@ export function AuthWidget({ className }: AuthWidgetProps) {
   if (error) {
     return (
       <div
+        role="alert"
+        aria-live="assertive"
         className={cn(
           "px-5 py-2 text-[0.65rem] tracking-[0.05em] text-muted-foreground/70",
           className,
@@ -124,14 +124,35 @@ export function AuthWidget({ className }: AuthWidgetProps) {
     );
   }
 
-  const handleLogout = () => {
-    void api.logout();
+  const handleLogout = async () => {
+    setError(null);
+    try {
+      await api.logout();
+    } catch {
+      setError("Sign out failed. Your session is still active; please try again.");
+    }
   };
 
-  // Prefer display_name → email → truncated user_id. Contract V1 only
-  // populates user_id; the fallthroughs are forward-compat for a future
-  // Portal that adds a userinfo endpoint (OQ-C1 in the plan).
-  const label = me.display_name || me.email || truncateUserId(me.user_id);
+  // Never fall back to the provider's opaque subject identifier. It is not a
+  // friendly identity and disclosing it in UI/support screenshots adds risk.
+  const label = me.display_name || me.email || "Signed-in account";
+  const providerLabel = me.provider_display_name || me.provider;
+  const logoutPending = globalAuth.status === "logout_pending";
+
+  if (collapsed) {
+    return (
+      <button
+        type="button"
+        onClick={() => void handleLogout()}
+        disabled={logoutPending}
+        className="mx-auto flex min-h-11 min-w-11 items-center justify-center text-muted-foreground hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current disabled:opacity-60"
+        aria-label={logoutPending ? "Signing out" : "Log out"}
+        title={logoutPending ? "Signing out…" : "Log out"}
+      >
+        <LogOut className="h-4 w-4" />
+      </button>
+    );
+  }
 
   return (
     <div
@@ -146,25 +167,31 @@ export function AuthWidget({ className }: AuthWidgetProps) {
       aria-label={`Logged in as ${label}`}
     >
       <div className="flex min-w-0 flex-col">
-        <span className="truncate font-mono text-foreground/90" title={me.user_id}>
+        <span className="truncate text-sm text-foreground/90">
           {label}
         </span>
         <span className="truncate text-muted-foreground/70">
-          via {me.provider}
+          via {providerLabel}
         </span>
+        {me.organization_label && (
+          <span className="truncate text-muted-foreground/70">
+            {me.organization_label}
+          </span>
+        )}
       </div>
       <button
         type="button"
-        onClick={handleLogout}
+        onClick={() => void handleLogout()}
+        disabled={logoutPending}
         className={cn(
-          "shrink-0 rounded p-1.5 text-muted-foreground/70",
+          "flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded text-muted-foreground/70",
           "transition-colors hover:bg-current/10 hover:text-foreground",
           "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-current/40",
         )}
-        aria-label="Log out"
-        title="Log out"
+        aria-label={logoutPending ? "Signing out" : "Log out"}
+        title={logoutPending ? "Signing out…" : "Log out"}
       >
-        <LogOut className="h-3.5 w-3.5" />
+        <LogOut className="h-4 w-4" />
       </button>
     </div>
   );

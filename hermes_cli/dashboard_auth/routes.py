@@ -50,7 +50,10 @@ from hermes_cli.dashboard_auth.cookies import (
 )
 from hermes_cli.dashboard_auth.client_ip import client_ip
 from hermes_cli.dashboard_auth.login_page import render_login_html
-from hermes_cli.dashboard_auth.middleware import access_denied_response
+from hermes_cli.dashboard_auth.middleware import (
+    access_denied_response,
+    provider_outage_response,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -141,7 +144,7 @@ async def login_page(request: Request) -> HTMLResponse:
         request.query_params.get("next", "")
     )
     return HTMLResponse(
-        render_login_html(next_path=next_path),
+        render_login_html(next_path=next_path, prefix=_prefix(request)),
         headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
     )
 
@@ -213,17 +216,14 @@ async def auth_login(request: Request, provider: str, next: str = ""):
 
     try:
         ls = p.start_login(redirect_uri=_redirect_uri(request))
-    except ProviderError as e:
+    except ProviderError:
         audit_log(
             AuditEvent.LOGIN_FAILURE,
             provider=provider,
             reason="provider_unreachable",
             ip=_client_ip(request),
         )
-        raise HTTPException(
-            status_code=503,
-            detail=f"Provider unreachable: {e}",
-        )
+        return provider_outage_response(request, provider)
 
     audit_log(
         AuditEvent.LOGIN_START,
@@ -408,8 +408,8 @@ async def auth_native_authorize(
 
     try:
         ls = p.start_login(redirect_uri=_redirect_uri(request))
-    except ProviderError as e:
-        raise HTTPException(status_code=503, detail=f"Provider unreachable: {e}")
+    except ProviderError:
+        return provider_outage_response(request, p.name)
 
     audit_log(
         AuditEvent.NATIVE_AUTHORIZE_START,
@@ -572,17 +572,14 @@ async def auth_callback(
             ip=_client_ip(request),
         )
         raise HTTPException(status_code=400, detail=f"Invalid code: {e}")
-    except ProviderError as e:
+    except ProviderError:
         audit_log(
             AuditEvent.LOGIN_FAILURE,
             provider=provider_name,
             reason="provider_unreachable",
             ip=_client_ip(request),
         )
-        raise HTTPException(
-            status_code=503,
-            detail=f"Provider unreachable: {e}",
-        )
+        return provider_outage_response(request, provider_name)
 
     audit_log(
         AuditEvent.LOGIN_SUCCESS,
@@ -648,7 +645,9 @@ async def auth_callback(
     # cookie is server-set so this is defence in depth, but a regression
     # that lets attacker-controlled bytes into the cookie would otherwise
     # produce an open redirect.
-    landing = _validate_post_login_target(next_from_cookie) or "/"
+    landing = _external_landing(
+        request, _validate_post_login_target(next_from_cookie) or "/"
+    )
     resp = RedirectResponse(url=landing, status_code=302)
     set_session_cookies(
         resp,
@@ -698,6 +697,22 @@ def _validate_post_login_target(raw: str) -> str:
     if decoded == "/api" or decoded.startswith("/api/"):
         return ""
     return decoded
+
+
+def _external_landing(request: Request, target: str) -> str:
+    """Return a same-origin landing path scoped to the public proxy prefix."""
+    prefix = _prefix(request)
+    if not prefix:
+        return target
+    if target == prefix or target.startswith(f"{prefix}/"):
+        inner = target[len(prefix):] or "/"
+        if any(
+            inner == path or inner.startswith(path)
+            for path in ("/login", "/auth/", "/api/")
+        ):
+            return f"{prefix}/"
+        return target
+    return f"{prefix}{target}"
 
 
 # ---------------------------------------------------------------------------
@@ -867,14 +882,14 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
         # supports_password was True but the method isn't actually
         # implemented — a provider bug, not a client error.
         raise HTTPException(status_code=500, detail="Provider misconfigured")
-    except ProviderError as e:
+    except ProviderError:
         audit_log(
             AuditEvent.LOGIN_FAILURE,
             provider=body.provider,
             reason="provider_unreachable",
             ip=ip,
         )
-        raise HTTPException(status_code=503, detail=f"Provider unreachable: {e}")
+        return provider_outage_response(request, body.provider)
 
     audit_log(
         AuditEvent.LOGIN_SUCCESS,
@@ -928,7 +943,9 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
         return resp
 
     expires_in = max(60, session.expires_at - int(time.time()))
-    landing = _validate_post_login_target(body.next) or "/"
+    landing = _external_landing(
+        request, _validate_post_login_target(body.next) or "/"
+    )
     resp = JSONResponse({"ok": True, "next": landing})
     set_session_cookies(
         resp,
@@ -984,12 +1001,28 @@ async def api_auth_me(request: Request):
     sess = getattr(request.state, "session", None)
     if sess is None:
         raise HTTPException(status_code=401, detail="Unauthorized")
+    provider = get_provider(sess.provider)
+    organization_label = ""
+    try:
+        from hermes_cli.config import load_config
+
+        dashboard = load_config().get("dashboard", {})
+        if isinstance(dashboard, dict):
+            organization_label = str(
+                dashboard.get("organization_label", "") or ""
+            ).strip()
+    except Exception:  # noqa: BLE001 - identity display config is optional
+        pass
     return {
         "user_id": sess.user_id,
         "email": sess.email,
         "display_name": sess.display_name,
         "org_id": sess.org_id,
         "provider": sess.provider,
+        "provider_display_name": (
+            provider.display_name if provider is not None else sess.provider
+        ),
+        "organization_label": organization_label,
         "expires_at": sess.expires_at,
     }
 
@@ -1153,10 +1186,7 @@ async def auth_native_refresh(request: Request, body: _NativeRefreshBody):
         }
 
     if unreachable is not None:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Auth provider {unreachable!r} unreachable",
-        )
+        return provider_outage_response(request, unreachable)
     audit_log(
         AuditEvent.REFRESH_FAILURE,
         reason="all_providers_rejected_rt",

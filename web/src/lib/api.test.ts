@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api, fetchJSON } from "./api";
+import { api, buildWsAuthParam, fetchJSON } from "./api";
+import { authState, resetAuthStateForTests } from "./auth-state";
 
 const reloadMocks = vi.hoisted(() => ({
   attemptDashboardTokenReloadOnce: vi.fn(() => false),
@@ -16,6 +17,7 @@ vi.mock("./dashboard-auth-reload", () => ({
 const SESSION_HEADER = "X-Hermes-Session-Token";
 
 beforeEach(() => {
+  resetAuthStateForTests();
   reloadMocks.attemptDashboardTokenReloadOnce.mockReset();
   reloadMocks.attemptDashboardTokenReloadOnce.mockReturnValue(false);
   reloadMocks.clearDashboardTokenReloadAttempt.mockReset();
@@ -85,6 +87,40 @@ describe("fetchJSON", () => {
     await expect(fetchJSON("/api/status")).resolves.toEqual({ ok: true });
 
     expect(reloadMocks.clearDashboardTokenReloadAttempt).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes structured 403 responses into the global terminal state", async () => {
+    window.__HERMES_AUTH_REQUIRED__ = true;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({ error: "access_denied", reference_id: "AUTH-1234" }),
+          { status: 403 },
+        ),
+      ),
+    );
+
+    await expect(fetchJSON("/api/status")).rejects.toMatchObject({ status: 403 });
+    expect(authState.getSnapshot()).toEqual({
+      status: "access_denied",
+      referenceId: "AUTH-1234",
+    });
+  });
+
+  it("routes WebSocket ticket failures through the same auth transitions", async () => {
+    window.__HERMES_AUTH_REQUIRED__ = true;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ error: "provider_unavailable" }), {
+          status: 503,
+        }),
+      ),
+    );
+
+    await expect(buildWsAuthParam()).rejects.toMatchObject({ status: 503 });
+    expect(authState.getSnapshot().status).toBe("provider_outage");
   });
 });
 

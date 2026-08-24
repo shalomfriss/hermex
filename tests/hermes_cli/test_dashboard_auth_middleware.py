@@ -486,7 +486,9 @@ def test_all_providers_unreachable_returns_503(_gated_state):
     client.cookies.set(SESSION_AT_COOKIE, "some-opaque-token")
     r = client.get("/api/auth/me")
     assert r.status_code == 503
-    assert "unreachable" in r.text.lower()
+    assert r.json()["error"] == "provider_unavailable"
+    assert r.json()["retryable"] is True
+    assert r.json()["reference_id"].startswith("AUTH-")
 
 
 def test_access_denial_is_terminal_for_cookie_bearer_and_refresh(_gated_state):
@@ -500,10 +502,10 @@ def test_access_denial_is_terminal_for_cookie_bearer_and_refresh(_gated_state):
     cookie_client.cookies.set(SESSION_AT_COOKIE, access_token)
     cookie_response = cookie_client.get("/api/auth/me")
     assert cookie_response.status_code == 403
-    assert cookie_response.json() == {
-        "error": "access_denied",
-        "detail": "Your account is not authorized for this dashboard.",
-    }
+    denial = cookie_response.json()
+    assert denial["error"] == "access_denied"
+    assert denial["detail"] == "Your account is not authorized for this dashboard."
+    assert denial["reference_id"].startswith("AUTH-")
     assert "raw_claims" not in cookie_response.text
     assert "group_required" not in cookie_response.text
     assert "Max-Age=0" in cookie_response.headers["set-cookie"]
@@ -530,6 +532,8 @@ def test_access_denial_returns_generic_html_for_document_load(_gated_state):
 
     assert response.status_code == 403
     assert "not authorized" in response.text
+    assert 'role="alert"' in response.text
+    assert "Support reference: AUTH-" in response.text
     assert "group_required" not in response.text
     assert "raw_claims" not in response.text
 

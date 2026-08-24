@@ -829,6 +829,23 @@ class TestPluginRegister:
         assert registered._scopes == "openid profile email"
         assert oidc_plugin.LAST_SKIP_REASON == ""
 
+    def test_configures_a_friendly_idp_display_name(self, patch_config):
+        patch_config(
+            {
+                "self_hosted": {
+                    "issuer": _ISSUER,
+                    "client_id": _CLIENT_ID,
+                    "display_name": "Acme Workforce SSO",
+                }
+            }
+        )
+        ctx = MagicMock()
+
+        oidc_plugin.register(ctx)
+
+        registered = ctx.register_dashboard_auth_provider.call_args.args[0]
+        assert registered.display_name == "Acme Workforce SSO"
+
 
     def test_env_overrides_config(self, patch_config, monkeypatch):
         patch_config(

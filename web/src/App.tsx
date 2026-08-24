@@ -743,11 +743,10 @@ export default function App() {
             <div
               className={cn(
                 "flex shrink-0 flex-col",
-                isDesktopCollapsed && "lg:hidden",
               )}
             >
-              <AuthWidget />
-              <SidebarFooter status={sidebarStatus} />
+              <AuthWidget collapsed={isDesktopCollapsed} />
+              {!isDesktopCollapsed && <SidebarFooter status={sidebarStatus} />}
             </div>
           </aside>
 

@@ -24,6 +24,7 @@ import {
   attemptDashboardTokenReloadOnce,
   clearDashboardTokenReloadAttempt,
 } from "@/lib/dashboard-auth-reload";
+import { applyAuthFailure, authState } from "@/lib/auth-state";
 
 // Ephemeral session token for protected endpoints.
 // Injected into index.html by the server — never fetched via API.
@@ -132,6 +133,20 @@ export async function fetchJSON<T>(
     // already attached above.
     credentials: init?.credentials ?? "include",
   });
+  let authBody: unknown = null;
+  if (res.status === 401 || res.status === 403 || res.status === 503) {
+    try {
+      authBody = await res.clone().json();
+    } catch {
+      // A non-JSON domain error is not part of the auth-state contract.
+    }
+    const transitioned = applyAuthFailure(res.status, authBody, {
+      retry: () => fetchJSON(url, init, options).then(() => undefined),
+    });
+    if (transitioned && res.status === 401) {
+      return new Promise<T>(() => {});
+    }
+  }
   if (res.status === 401) {
     // Phase 6: the gated middleware emits a structured envelope so the
     // SPA can full-page-navigate to /login on session expiry. Parse it,
@@ -223,7 +238,18 @@ export async function getWsTicket(): Promise<{ ticket: string; ttl_seconds: numb
     credentials: "include",
   });
   if (!res.ok) {
-    throw new Error(`/api/auth/ws-ticket: HTTP ${res.status}`);
+    let body: unknown = null;
+    let text = res.statusText;
+    try {
+      text = await res.clone().text();
+      body = JSON.parse(text);
+    } catch {
+      // Retain the HTTP status when an intermediary returned plain text.
+    }
+    applyAuthFailure(res.status, body, {
+      retry: () => getWsTicket().then(() => undefined),
+    });
+    throw new ApiError(res.status, text, body);
   }
   return res.json();
 }
@@ -268,11 +294,26 @@ export async function authedFetch(
   if (token) {
     setSessionHeader(headers, token);
   }
-  return fetch(`${BASE}${url}`, {
+  const response = await fetch(`${BASE}${url}`, {
     ...init,
     headers,
     credentials: init?.credentials ?? "include",
   });
+  if (response.status === 401 || response.status === 403 || response.status === 503) {
+    let body: unknown = null;
+    try {
+      body = await response.clone().json();
+    } catch {
+      // Non-JSON endpoint errors remain caller-owned.
+    }
+    const transitioned = applyAuthFailure(response.status, body, {
+      retry: () => authedFetch(url, init).then(() => undefined),
+    });
+    if (transitioned && response.status === 401) {
+      return new Promise<Response>(() => {});
+    }
+  }
+  return response;
 }
 
 /**
@@ -376,17 +417,26 @@ export const api = {
     fetchJSON<AuthMeResponse>("/api/auth/me", undefined, {
       allowUnauthorized: true,
     }),
-  logout: () =>
-    fetch(`${BASE}/auth/logout`, {
-      method: "POST",
-      credentials: "include",
-    }).then((r) => {
+  logout: async () => {
+    authState.logoutPending();
+    try {
+      const response = await fetch(`${BASE}/auth/logout`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!response.ok) {
+        throw new ApiError(response.status, await response.text(), null);
+      }
       // /auth/logout returns 302 → /login. Follow that with a full-page
       // navigation rather than letting fetch() opaquely consume the
       // redirect — the SPA needs to leave the protected area.
-      window.location.assign("/login");
-      return r;
-    }),
+      window.location.assign(`${BASE}/login`);
+      return response;
+    } catch (error) {
+      authState.logoutFailed();
+      throw error;
+    }
+  },
   getSessions: (
     limit = 20,
     offset = 0,
@@ -1353,16 +1403,17 @@ export const api = {
  *
  * Returned by the dashboard's gated middleware when a valid session cookie
  * is attached. ``email`` and ``display_name`` are empty strings under the
- * Nous Portal contract V1 (the access token has no email/name claims —
- * see Contract Anchor C4 in the plan). The AuthWidget surfaces a
- * truncated ``user_id`` instead.
+ * Nous Portal contract V1 may omit email/name claims. The AuthWidget never
+ * substitutes the opaque ``user_id`` into visible UI.
  */
 export interface AuthMeResponse {
-  user_id: string;
+  user_id?: string;
   email: string;
   display_name: string;
   org_id: string;
   provider: string;
+  provider_display_name: string;
+  organization_label: string;
   expires_at: number;
 }
 

@@ -666,9 +666,9 @@ def test_native_refresh_access_denial_is_terminal_and_generic(gated_client):
     )
 
     assert response.status_code == 403
-    assert response.json() == {
-        "error": "access_denied",
-        "detail": "Your account is not authorized for this dashboard.",
-    }
+    denial = response.json()
+    assert denial["error"] == "access_denied"
+    assert denial["detail"] == "Your account is not authorized for this dashboard."
+    assert denial["reference_id"].startswith("AUTH-")
     assert "tenant_denied" not in response.text
     assert "raw_claims" not in response.text

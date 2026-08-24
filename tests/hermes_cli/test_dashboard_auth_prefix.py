@@ -154,6 +154,26 @@ class TestForwardedPrefixNormalisation:
 
 
 class TestGateRedirectsCarryPrefix:
+    def test_login_document_uses_prefix_for_every_local_resource_and_action(
+        self, gated_app_proxied
+    ):
+        response = gated_app_proxied.get(
+            "/login",
+            headers={"x-forwarded-prefix": "/hermes"},
+        )
+
+        assert response.status_code == 200
+        html = response.text
+        for font in (
+            "Collapse-Regular.woff2",
+            "Collapse-Bold.woff2",
+            "RulesCompressed-Regular.woff2",
+            "RulesCompressed-Medium.woff2",
+        ):
+            assert f"url('/hermes/fonts/{font}')" in html
+        assert 'href="/hermes/auth/login?provider=stub' in html
+        assert 'href="/auth/login?provider=stub' not in html
+
     def test_html_redirect_to_login_carries_prefix(self, gated_app_proxied):
         r = gated_app_proxied.get(
             "/sessions",
@@ -250,6 +270,58 @@ class TestOAuthRedirectUriRespectsPrefix:
         parsed = urlparse(redirect_uri)
         assert parsed.netloc == "fly-app.fly.dev"
         assert parsed.path == "/auth/callback"
+
+    def test_successful_callback_lands_inside_prefix(self, gated_app_proxied):
+        started = gated_app_proxied.get(
+            "/auth/login?provider=stub&next=%2Fsessions%3Fview%3Drecent",
+            headers={"x-forwarded-prefix": "/hermes"},
+            follow_redirects=False,
+        )
+        pkce_set = next(
+            cookie
+            for cookie in started.headers.get_list("set-cookie")
+            if "hermes_session_pkce" in cookie
+        )
+        pkce_kv = pkce_set.split(";", 1)[0]
+        state = started.headers["location"].split("state=")[1]
+
+        completed = gated_app_proxied.get(
+            f"/auth/callback?code=stub_code&state={state}",
+            headers={
+                "x-forwarded-prefix": "/hermes",
+                "cookie": pkce_kv,
+            },
+            follow_redirects=False,
+        )
+
+        assert completed.status_code == 302
+        assert completed.headers["location"] == "/hermes/sessions?view=recent"
+
+    def test_prefixed_auth_next_cannot_create_a_post_login_loop(
+        self, gated_app_proxied
+    ):
+        started = gated_app_proxied.get(
+            "/auth/login?provider=stub&next=%2Fhermes%2Fauth%2Flogin",
+            headers={"x-forwarded-prefix": "/hermes"},
+            follow_redirects=False,
+        )
+        pkce_set = next(
+            cookie
+            for cookie in started.headers.get_list("set-cookie")
+            if "hermes_session_pkce" in cookie
+        )
+        state = started.headers["location"].split("state=")[1]
+
+        completed = gated_app_proxied.get(
+            f"/auth/callback?code=stub_code&state={state}",
+            headers={
+                "x-forwarded-prefix": "/hermes",
+                "cookie": pkce_set.split(";", 1)[0],
+            },
+            follow_redirects=False,
+        )
+
+        assert completed.headers["location"] == "/hermes/"
 
 
 # ---------------------------------------------------------------------------
