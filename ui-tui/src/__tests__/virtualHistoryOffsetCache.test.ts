@@ -536,10 +536,17 @@ describe('useVirtualHistory offset cache reuse', () => {
       scroll.scrollTo(5)
       const adjustScrollTop = vi.spyOn(scroll, 'adjustScrollTop')
       const staleHeights = new Map(initialHeights)
+      const measuredRef = expose.current!.virtualHistory.measureRef(items[1]!.key)
 
-      staleHeights.set(items[0]!.key, 1)
+      // This is a hook-level unmount test, not a Yoga lifetime test. Attach a
+      // deterministic measured node and drive ref(null) explicitly so prior
+      // renderer-root teardown cannot decide whether the measurement exists.
+      measuredRef({ yogaNode: { getComputedHeight: () => 2 } })
+
+      staleHeights.set(items[1]!.key, 1)
       instance.rerender(React.createElement(Harness, { expose, initialHeights: staleHeights, items }))
-      await delay(40)
+      measuredRef(null)
+      await vi.waitFor(() => expect(adjustScrollTop).toHaveBeenCalledOnce(), { interval: 10, timeout: 2000 })
 
       expect(adjustScrollTop).toHaveBeenCalledOnce()
       expect(adjustScrollTop).toHaveBeenCalledWith(1)
