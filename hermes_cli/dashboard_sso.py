@@ -393,7 +393,7 @@ def check_sso(*, public_url: str | None = None) -> dict[str, Any]:
             elif "missing" in detail:
                 code = "discovery_incomplete"
                 message = "OIDC discovery is missing required endpoints"
-            elif "https" in detail:
+            elif "https" in detail or "credential" in detail or "userinfo" in detail:
                 code = "discovery_endpoint_policy"
                 message = "OIDC discovery endpoints must use HTTPS except loopback"
             else:
