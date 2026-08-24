@@ -146,48 +146,6 @@ describe('useVirtualHistory offset cache reuse', () => {
     expect(short).not.toBe(tall)
   })
 
-  // Keep this renderer-lifetime regression first among the Ink integration
-  // cases. It exercises ref(null) while the outgoing Yoga node is still live;
-  // later cases intentionally tear down and recreate renderer roots.
-  it('corrects and compensates a same-layout row measured at unmount', async () => {
-    const items = Array.from({ length: 20 }, (_, index) => ({ height: 2, key: `item-${index}` }))
-    const expose = { current: null as Exposed | null }
-    const streams = makeStreams()
-    const initialHeights = new Map(items.map(item => [item.key, item.height]))
-
-    const instance = renderSync(React.createElement(Harness, { expose, initialHeights, items }), {
-      patchConsole: false,
-      stderr: streams.stderr as NodeJS.WriteStream,
-      stdin: streams.stdin as NodeJS.ReadStream,
-      stdout: streams.stdout as NodeJS.WriteStream
-    })
-
-    try {
-      await delay(20)
-      const scroll = expose.current!.scroll!
-
-      scroll.scrollTo(0)
-      await delay(20)
-      scroll.scrollTo(5)
-      const adjustScrollTop = vi.spyOn(scroll, 'adjustScrollTop')
-      const staleHeights = new Map(initialHeights)
-
-      staleHeights.set(items[0]!.key, 1)
-      instance.rerender(React.createElement(Harness, { expose, initialHeights: staleHeights, items }))
-      await vi.waitFor(() => expect(adjustScrollTop).toHaveBeenCalledOnce(), { interval: 10, timeout: 2000 })
-
-      expect(adjustScrollTop).toHaveBeenCalledOnce()
-      expect(adjustScrollTop).toHaveBeenCalledWith(1)
-      expect(scroll.getScrollTop()).toBe(6)
-      expect(scroll.isSticky()).toBe(false)
-      expect(expose.current!.virtualHistory.start).toBeGreaterThan(0)
-      expect(expose.current!.virtualHistory.offsets[1]).toBe(2)
-    } finally {
-      instance.unmount()
-      instance.cleanup()
-    }
-  })
-
   it('remounts enough tail rows after the scroll viewport grows', async () => {
     const items = Array.from({ length: 100 }, (_, index) => ({ height: 1, key: `item-${index}` }))
     const expose = { current: null as Exposed | null }
@@ -550,6 +508,52 @@ describe('useVirtualHistory offset cache reuse', () => {
       expect(adjustScrollTop).not.toHaveBeenCalled()
       expect(scroll.getScrollTop()).toBe(5)
       expect(expose.current!.virtualHistory.offsets[incoming.length]).toBe(40)
+    } finally {
+      instance.unmount()
+      instance.cleanup()
+    }
+  })
+
+  it('corrects and compensates a same-layout row measured at unmount', async () => {
+    const items = Array.from({ length: 20 }, (_, index) => ({ height: 2, key: `item-${index}` }))
+    const expose = { current: null as Exposed | null }
+    const streams = makeStreams()
+    const initialHeights = new Map(items.map(item => [item.key, item.height]))
+
+    const instance = renderSync(React.createElement(Harness, { expose, initialHeights, items }), {
+      patchConsole: false,
+      stderr: streams.stderr as NodeJS.WriteStream,
+      stdin: streams.stdin as NodeJS.ReadStream,
+      stdout: streams.stdout as NodeJS.WriteStream
+    })
+
+    try {
+      await delay(20)
+      const scroll = expose.current!.scroll!
+
+      scroll.scrollTo(0)
+      await delay(20)
+      scroll.scrollTo(5)
+      const adjustScrollTop = vi.spyOn(scroll, 'adjustScrollTop')
+      const staleHeights = new Map(initialHeights)
+      const measuredRef = expose.current!.virtualHistory.measureRef(items[1]!.key)
+
+      // This is a hook-level unmount test, not a Yoga lifetime test. Attach a
+      // deterministic measured node and drive ref(null) explicitly so prior
+      // renderer-root teardown cannot decide whether the measurement exists.
+      measuredRef({ yogaNode: { getComputedHeight: () => 2 } })
+
+      staleHeights.set(items[1]!.key, 1)
+      instance.rerender(React.createElement(Harness, { expose, initialHeights: staleHeights, items }))
+      measuredRef(null)
+      await vi.waitFor(() => expect(adjustScrollTop).toHaveBeenCalledOnce(), { interval: 10, timeout: 2000 })
+
+      expect(adjustScrollTop).toHaveBeenCalledOnce()
+      expect(adjustScrollTop).toHaveBeenCalledWith(1)
+      expect(scroll.getScrollTop()).toBe(6)
+      expect(scroll.isSticky()).toBe(false)
+      expect(expose.current!.virtualHistory.start).toBeGreaterThan(0)
+      expect(expose.current!.virtualHistory.offsets[1]).toBe(2)
     } finally {
       instance.unmount()
       instance.cleanup()
