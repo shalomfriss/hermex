@@ -66,9 +66,9 @@ from fastapi.responses import Response
 # request's HTTPS + prefix combination.
 SESSION_AT_COOKIE = "hermes_session_at"
 SESSION_RT_COOKIE = "hermes_session_rt"
-# Provider that minted the session. This non-secret routing hint prevents a
-# refresh token from being handed to the wrong provider when several dashboard
-# auth plugins are enabled (for example Basic + Nous OAuth).
+# Integrity-protected proof of the provider that minted the refresh token.
+# The cookie value is bound to the exact RT by ``refresh_binding``; a mutable
+# provider name must never be accepted as authority for routing a credential.
 SESSION_PROVIDER_COOKIE = "hermes_session_provider"
 PKCE_COOKIE = "hermes_session_pkce"
 # One-shot loop-guard marker for the auto-SSO redirect (Phase 1,
@@ -149,15 +149,19 @@ def set_session_provider_cookie(
     response: Response,
     *,
     provider: str,
+    refresh_token: str,
     use_https: bool,
     prefix: str = "",
 ) -> None:
-    """Persist the non-secret provider routing hint for token refresh."""
-    if not provider:
+    """Persist an integrity-protected provider/refresh-token binding."""
+    from hermes_cli.dashboard_auth.refresh_binding import mint_refresh_binding
+
+    binding = mint_refresh_binding(provider=provider, refresh_token=refresh_token)
+    if not binding:
         return
     response.set_cookie(
         _resolved_name(SESSION_PROVIDER_COOKIE, use_https=use_https, prefix=prefix),
-        provider,
+        binding,
         max_age=_RT_MAX_AGE,
         **_common_attrs(use_https=use_https, prefix=prefix),
     )
@@ -207,6 +211,7 @@ def set_session_cookies(
     set_session_provider_cookie(
         response,
         provider=provider,
+        refresh_token=refresh_token,
         use_https=use_https,
         prefix=prefix,
     )
@@ -281,9 +286,14 @@ def read_session_cookies(request: Request) -> Tuple[Optional[str], Optional[str]
     return at, rt
 
 
-def read_session_provider(request: Request) -> Optional[str]:
-    """Return the provider routing hint associated with the session cookies."""
-    return _read_with_fallback(request, SESSION_PROVIDER_COOKIE)
+def read_session_provider(request: Request, *, refresh_token: str) -> Optional[str]:
+    """Return the authenticated refresh-token owner, if the proof is valid."""
+    from hermes_cli.dashboard_auth.refresh_binding import resolve_refresh_owner
+
+    return resolve_refresh_owner(
+        binding=_read_with_fallback(request, SESSION_PROVIDER_COOKIE),
+        refresh_token=refresh_token,
+    )
 
 
 def read_pkce_cookie(request: Request) -> Optional[str]:

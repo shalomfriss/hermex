@@ -26,7 +26,12 @@ from hermes_cli.dashboard_auth import (
     clear_providers,
     register_provider,
 )
-from hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE, SESSION_RT_COOKIE
+from hermes_cli.dashboard_auth.cookies import (
+    SESSION_AT_COOKIE,
+    SESSION_PROVIDER_COOKIE,
+    SESSION_RT_COOKIE,
+)
+from hermes_cli.dashboard_auth.refresh_binding import mint_refresh_binding
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 
 
@@ -531,6 +536,14 @@ def _mint_stub_at(stub: StubAuthProvider) -> str:
     return session.access_token
 
 
+def _bind_refresh_cookie(client: TestClient, *, provider: str, token: str) -> None:
+    client.cookies.set(SESSION_RT_COOKIE, token)
+    client.cookies.set(
+        SESSION_PROVIDER_COOKIE,
+        mint_refresh_binding(provider=provider, refresh_token=token),
+    )
+
+
 @pytest.fixture
 def _gated_state():
     """Bare gated app-state setup WITHOUT registering any provider, so each
@@ -577,7 +590,7 @@ def test_refresh_receives_prior_identity_token_when_provider_supports_it(
     register_provider(provider)
     client = _gated_state()
     client.cookies.set(SESSION_AT_COOKIE, "previous-verified-id-token")
-    client.cookies.set(SESSION_RT_COOKIE, "refresh-token")
+    _bind_refresh_cookie(client, provider=provider.name, token="refresh-token")
 
     response = client.get("/api/auth/me")
 
@@ -592,7 +605,7 @@ def test_near_expiry_session_refreshes_while_prior_identity_is_still_valid(
     register_provider(provider)
     client = _gated_state()
     client.cookies.set(SESSION_AT_COOKIE, "still-valid-id-token")
-    client.cookies.set(SESSION_RT_COOKIE, "refresh-token")
+    _bind_refresh_cookie(client, provider=provider.name, token="refresh-token")
 
     response = client.get("/api/auth/me")
 
@@ -607,10 +620,11 @@ def test_near_expiry_session_refreshes_while_prior_identity_is_still_valid(
 
 
 def test_proactive_refresh_outage_serves_still_valid_session(_gated_state):
-    register_provider(_ProactiveRefreshOutageProvider())
+    provider = _ProactiveRefreshOutageProvider()
+    register_provider(provider)
     client = _gated_state()
     client.cookies.set(SESSION_AT_COOKIE, "still-valid-id-token")
-    client.cookies.set(SESSION_RT_COOKIE, "refresh-token")
+    _bind_refresh_cookie(client, provider=provider.name, token="refresh-token")
 
     response = client.get("/api/auth/me")
 
@@ -644,7 +658,11 @@ def test_access_denial_is_terminal_for_cookie_bearer_and_refresh(_gated_state):
     assert bearer_response.status_code == 403
 
     refresh_client = _gated_state()
-    refresh_client.cookies.set(SESSION_RT_COOKIE, "recognized-refresh-token")
+    _bind_refresh_cookie(
+        refresh_client,
+        provider=denying.name,
+        token="recognized-refresh-token",
+    )
     refresh_response = refresh_client.get("/api/auth/me")
     assert refresh_response.status_code == 403
     assert "Max-Age=0" in refresh_response.headers["set-cookie"]

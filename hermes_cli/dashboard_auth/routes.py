@@ -46,6 +46,7 @@ from hermes_cli.dashboard_auth.cookies import (
     detect_https,
     read_pkce_cookie,
     read_session_cookies,
+    read_session_provider,
     set_pkce_cookie,
     set_session_cookies,
 )
@@ -55,6 +56,10 @@ from hermes_cli.dashboard_auth.middleware import (
     _attempt_refresh,
     access_denied_response,
     provider_outage_response,
+)
+from hermes_cli.dashboard_auth.refresh_binding import (
+    mint_refresh_binding,
+    resolve_refresh_owner,
 )
 
 _log = logging.getLogger(__name__)
@@ -965,10 +970,12 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
 async def auth_logout(request: Request):
     _at, rt = read_session_cookies(request)
     if rt:
-        # Best-effort revoke. Try every provider so a session minted by
-        # any registered provider is revoked correctly. Failures are
-        # logged but never raised.
-        for provider in list_providers():
+        # Best-effort revoke on the integrity-bound owner only. Missing,
+        # tampered, or stale ownership safely clears local cookies without
+        # disclosing the provider-scoped credential to another plugin.
+        owner = read_session_provider(request, refresh_token=rt)
+        provider = get_provider(owner) if owner else None
+        if provider is not None:
             try:
                 provider.revoke_session(refresh_token=rt)
             except Exception as e:  # noqa: BLE001 — best-effort
@@ -1177,6 +1184,10 @@ async def auth_native_token(request: Request, body: _NativeTokenBody):
     return {
         "access_token": session.access_token,
         "refresh_token": session.refresh_token,
+        "refresh_binding": mint_refresh_binding(
+            provider=session.provider,
+            refresh_token=session.refresh_token,
+        ),
         "token_type": "Bearer",
         "expires_at": session.expires_at,
         "provider": session.provider,
@@ -1186,6 +1197,9 @@ async def auth_native_token(request: Request, body: _NativeTokenBody):
 
 class _NativeRefreshBody(BaseModel):
     refresh_token: str
+    refresh_binding: str
+    # Retained for wire compatibility and display only. Ownership is resolved
+    # exclusively from ``refresh_binding``; this mutable field is never trusted.
     provider: str = ""
 
 
@@ -1195,24 +1209,28 @@ async def auth_native_refresh(request: Request, body: _NativeRefreshBody):
 
     The desktop owns its refresh token (OS keychain) rather than a cookie, so
     it rotates here instead of relying on the gate's transparent cookie
-    rotation. Mirrors the middleware's ``_attempt_refresh`` provider stacking:
-    tries each session provider until one rotates the token, returning the new
-    access/refresh pair **in the JSON body**.
+    rotation. The integrity proof returned by the token exchange binds the
+    credential to exactly one provider; missing/stale/tampered ownership fails
+    closed rather than probing provider plugins with a bearer secret.
 
     Failure modes:
-      * every provider rejects the RT (dead/expired/reuse-detected) → 401
+      * the owner rejects the RT (dead/expired/reuse-detected) → 401
         ``session_expired`` so the desktop starts a fresh native login;
-      * a provider's IDP is unreachable and none rotated → 503.
+      * the owner's IDP is unreachable → 503.
     """
     if not body.refresh_token:
         raise HTTPException(status_code=400, detail="refresh_token required")
 
+    owner = resolve_refresh_owner(
+        binding=body.refresh_binding,
+        refresh_token=body.refresh_token,
+    )
     try:
         refreshed = _attempt_refresh(
             request,
             refresh_token=body.refresh_token,
             access_token="",
-            provider_hint=body.provider,
+            refresh_owner=owner,
         )
     except AccessDeniedError as e:
         return access_denied_response(request, error=e)
@@ -1233,6 +1251,10 @@ async def auth_native_refresh(request: Request, body: _NativeRefreshBody):
         return {
             "access_token": session.access_token,
             "refresh_token": session.refresh_token,
+            "refresh_binding": mint_refresh_binding(
+                provider=session.provider,
+                refresh_token=session.refresh_token,
+            ),
             "token_type": "Bearer",
             "expires_at": session.expires_at,
             "provider": session.provider,
@@ -1240,7 +1262,7 @@ async def auth_native_refresh(request: Request, body: _NativeRefreshBody):
         }
     audit_log(
         AuditEvent.REFRESH_FAILURE,
-        reason="all_providers_rejected_rt",
+        reason="owner_rejected_or_binding_invalid",
         ip=_client_ip(request),
     )
     return JSONResponse(
