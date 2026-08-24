@@ -95,6 +95,7 @@ from hermes_cli.dashboard_auth import (
     RefreshExpiredError,
     Session,
 )
+from .policy import OIDCAuthorizationPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +185,7 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         client_id: str,
         scopes: str = _DEFAULT_SCOPES,
         client_secret: str = "",
+        authorization: Dict[str, Any] | None = None,
     ) -> None:
         if not issuer:
             raise ValueError("issuer is required")
@@ -202,6 +204,9 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         # provisioned-but-blank secret can't flip us into a broken confidential
         # mode that sends an empty client_secret. Non-empty ⇒ confidential.
         self._client_secret = (client_secret or "").strip()
+        self._authorization_policy = OIDCAuthorizationPolicy.from_mapping(
+            authorization
+        )
 
         # Discovery + JWKS are lazily resolved on first use so plugin
         # registration never makes a network call (the IDP may be down at
@@ -234,6 +239,10 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
         }
+        if self._authorization_policy.max_auth_age_seconds > 0:
+            params["max_age"] = str(
+                self._authorization_policy.max_auth_age_seconds
+            )
         redirect_url = (
             f"{disco['authorization_endpoint']}?{urllib.parse.urlencode(params)}"
         )
@@ -312,7 +321,7 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         # then refreshes or logs out); raises ProviderError if the IDP/JWKS is
         # unreachable.
         try:
-            claims = self._verify_id_token(access_token)
+            claims, identity = self._verify_and_authorize_id_token(access_token)
         except InvalidCodeError:
             # Expired / invalid token — protocol says return None, not raise.
             return None
@@ -321,7 +330,10 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         # No refresh token available on this path; "" is fine — the middleware
         # re-reads the refresh-token cookie separately for refresh_session.
         return self._session_from_tokens(
-            id_token=access_token, refresh_token="", claims=claims
+            id_token=access_token,
+            refresh_token="",
+            claims=claims,
+            identity=identity,
         )
 
     def revoke_session(self, *, refresh_token: str) -> None:
@@ -468,7 +480,9 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         if token_type and token_type != "bearer":
             raise ProviderError(f"unexpected token_type={token_type!r}")
 
-        claims = self._verify_id_token(id_token, expected_nonce=expected_nonce)
+        claims, identity = self._verify_and_authorize_id_token(
+            id_token, expected_nonce=expected_nonce
+        )
 
         # Refresh-token rotation: prefer a freshly-issued one, else keep the
         # previous (some IDPs don't rotate). Empty string if neither — the
@@ -478,7 +492,10 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
             refresh_token = previous_refresh_token or ""
 
         return self._session_from_tokens(
-            id_token=id_token, refresh_token=refresh_token, claims=claims
+            id_token=id_token,
+            refresh_token=refresh_token,
+            claims=claims,
+            identity=identity,
         )
 
     # ---- internals: discovery ---------------------------------------------
@@ -708,6 +725,14 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
 
         return claims
 
+    def _verify_and_authorize_id_token(
+        self, id_token: str, *, expected_nonce: str = ""
+    ) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        """Cryptographically verify, then apply admission policy exactly once."""
+        claims = self._verify_id_token(id_token, expected_nonce=expected_nonce)
+        identity = self._authorization_policy.authorize(claims)
+        return claims, identity
+
     # ---- internals: mapping + misc ----------------------------------------
 
     def _session_from_tokens(
@@ -716,6 +741,7 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         id_token: str,
         refresh_token: str,
         claims: Dict[str, Any],
+        identity: Dict[str, Any] | None = None,
     ) -> Session:
         """Map verified OIDC claims onto a Session.
 
@@ -740,7 +766,13 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         # Org/tenant is non-standard; accept the common spellings. Groups, if
         # present as a list, are joined so multi-tenant IDPs surface *something*
         # rather than dropping the info — org_id is a free-form string.
-        org_id = claims.get("org_id") or claims.get("organization") or ""
+        identity = identity or {}
+        org_id = (
+            identity.get("tenant")
+            or claims.get("org_id")
+            or claims.get("organization")
+            or ""
+        )
         if not org_id:
             groups = claims.get("groups")
             if isinstance(groups, list) and groups:
@@ -871,6 +903,7 @@ def register(ctx) -> None:
     client_secret = _resolve_setting(
         "HERMES_DASHBOARD_OIDC_CLIENT_SECRET", oidc_cfg.get("client_secret")
     )
+    authorization = oidc_cfg.get("authorization", {})
 
     if not issuer or not client_id:
         LAST_SKIP_REASON = (
@@ -891,6 +924,7 @@ def register(ctx) -> None:
             client_id=client_id,
             scopes=scopes,
             client_secret=client_secret,
+            authorization=authorization,
         )
     except (ValueError, ProviderError) as exc:
         LAST_SKIP_REASON = (
