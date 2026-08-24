@@ -383,53 +383,54 @@ function ProviderGroupCard({
 
   // Get a representative URL for "Get key" link
   const keyUrl = apiKeys.find(([, info]) => info.url)?.[1]?.url ?? null;
+  const contentId = `provider-${group.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
 
   return (
     <div className="border border-border">
       {/* Header — always visible */}
-      <ListItem
-        onClick={() => setExpanded(!expanded)}
-        aria-expanded={expanded}
-        className="justify-between gap-3 px-4 py-3 hover:bg-primary/5"
-      >
-        <div className="flex items-center gap-3 min-w-0">
-          {expanded ? (
-            <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-          ) : (
-            <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-          )}
-          <span className="font-semibold text-sm tracking-wide">
-            {group.name === "Other" ? t.common.other : group.name}
-          </span>
-          {hasAnyConfigured && (
-            <Badge tone="success" className="text-xs">
-              {configuredCount} {t.common.set.toLowerCase()}
-            </Badge>
-          )}
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          {keyUrl && (
-            <a
-              aria-label={`${t.env.getKey}: ${group.name}`}
-              href={keyUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
-              onClick={(e) => e.stopPropagation()}
-            >
-              {t.env.getKey} <ExternalLink className="h-2.5 w-2.5" />
-            </a>
-          )}
+      <div className="flex items-stretch">
+        <ListItem
+          onClick={() => setExpanded(!expanded)}
+          aria-controls={contentId}
+          aria-expanded={expanded}
+          className="min-w-0 flex-1 justify-between gap-3 px-4 py-3 hover:bg-primary/5"
+        >
+          <div className="flex items-center gap-3 min-w-0">
+            {expanded ? (
+              <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+            ) : (
+              <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+            )}
+            <span className="font-semibold text-sm tracking-wide">
+              {group.name === "Other" ? t.common.other : group.name}
+            </span>
+            {hasAnyConfigured && (
+              <Badge tone="success" className="text-xs">
+                {configuredCount} {t.common.set.toLowerCase()}
+              </Badge>
+            )}
+          </div>
           <span className="text-xs text-text-tertiary">
             {t.env.keysCount
               .replace("{count}", String(group.entries.length))
               .replace("{s}", group.entries.length !== 1 ? "s" : "")}
           </span>
-        </div>
-      </ListItem>
+        </ListItem>
+        {keyUrl && (
+          <a
+            aria-label={`${t.env.getKey}: ${group.name}`}
+            href={keyUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex shrink-0 items-center gap-1 border-l border-border px-4 text-xs text-primary hover:bg-primary/5 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
+          >
+            {t.env.getKey} <ExternalLink className="h-2.5 w-2.5" />
+          </a>
+        )}
+      </div>
 
       {expanded && (
-        <div className="border-t border-border px-4 py-3 grid gap-2">
+        <div id={contentId} className="border-t border-border px-4 py-3 grid gap-2">
           {apiKeys.map(([key, info]) => (
             <EnvVarRow
               key={key}

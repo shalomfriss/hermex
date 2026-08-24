@@ -210,6 +210,8 @@ export default function LogsPage() {
 
           <div
             ref={scrollRef}
+            aria-label={`${file}.log — ${t.logs.title}`}
+            tabIndex={0}
             className="max-w-full min-h-[400px] max-h-[calc(100vh-220px)] overflow-auto p-4 font-mono-ui text-xs leading-5 break-words"
           >
             {lines.length === 0 && !loading && (

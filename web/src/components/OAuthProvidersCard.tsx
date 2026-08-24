@@ -193,7 +193,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                         </span>
 
                         <div className="flex min-w-0 flex-wrap items-center gap-2">
-                          <code className="font-courier truncate text-xs opacity-60">
+                          <code className="font-courier truncate text-xs">
                             {p.cli_command}
                           </code>
 
@@ -220,15 +220,10 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                       href={p.docs_url}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="inline-flex"
+                      className="inline-flex h-8 w-8 items-center justify-center text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       title={`Open ${p.name} docs`}
                     >
-                      <span
-                        aria-hidden="true"
-                        className="inline-flex h-9 w-9 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
-                      >
-                        <ExternalLink />
-                      </span>
+                      <ExternalLink className="h-4 w-4" />
                     </a>
                   )}
                   {!p.status.logged_in && p.flow !== "external" && (

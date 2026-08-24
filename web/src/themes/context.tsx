@@ -29,6 +29,7 @@ import type {
   ThemeTypography,
 } from "./types";
 import { api } from "@/lib/api";
+import { semanticThemeCssVars } from "./accessibility";
 
 /** LocalStorage key — pre-applied before the React tree mounts to avoid
  *  a visible flash of the default palette on theme-overridden installs. */
@@ -377,6 +378,7 @@ function applyTheme(theme: DashboardTheme) {
     ...typographyVars(theme.typography),
     ...layoutVars(theme.layout),
     ...overrideVars(theme.colorOverrides),
+    ...semanticThemeCssVars(theme),
     ...seriesColorVars(theme.seriesColors),
     ...assetMap,
     ...componentMap,

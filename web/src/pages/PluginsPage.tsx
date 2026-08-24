@@ -1113,7 +1113,7 @@ function PluginRowCard(props: PluginRowCardProps) {
         {!row.has_dashboard_manifest && !dm ? (
 
 
-          <p className="text-xs italic text-text-disabled">
+          <p className="text-xs italic text-text-tertiary">
             {t.pluginsPage.noDashboardTab}
           </p>
         ) : null}
