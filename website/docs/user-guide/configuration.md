@@ -920,6 +920,22 @@ Points at a custom OpenAI-compatible endpoint. Uses `OPENAI_API_KEY` for auth.
 The summary model **must** have a context window at least as large as your main agent model's. The compressor sends the full middle section of the conversation to the summary model — if that model's context window is smaller than the main model's, the summarization call will fail with a context length error. When this happens, the middle turns are **dropped without a summary**, losing conversation context silently. If you override the model, verify its context length meets or exceeds your main model's.
 :::
 
+## Readiness Disk Headroom
+
+The authenticated `/health/detailed` readiness check reserves 1 GiB of free
+disk space by default. Raise the reservation for deployments that build or run
+large disposable services on the same volume:
+
+```yaml
+readiness:
+  disk_min_free_gb: 10
+```
+
+When free space falls below this value, the disk check and top-level readiness
+status become `degraded`. The public `/api/status` disk-pressure thresholds are
+unchanged; this setting is a deployment-specific readiness gate, not a rewrite
+of generic write-safety severity.
+
 ## Gateway Turn Lease Timeout
 
 The gateway serializes turns by their resolved session ID so two routing keys
