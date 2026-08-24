@@ -1,6 +1,7 @@
 """Abstract base + dataclasses + exceptions for dashboard auth providers."""
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
@@ -76,21 +77,7 @@ class ProviderError(Exception):
     """
 
 
-ACCESS_DENIED_REASONS: frozenset[str] = frozenset(
-    {
-        "email_required",
-        "email_unverified",
-        "email_domain_denied",
-        "tenant_denied",
-        "group_required",
-        "role_required",
-        "acr_denied",
-        "mfa_required",
-        "auth_too_old",
-        "auth_time_in_future",
-        "claim_malformed",
-    }
-)
+_ACCESS_DENIED_REASON_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 
 class AccessDeniedError(Exception):
@@ -107,7 +94,9 @@ class AccessDeniedError(Exception):
     def __init__(
         self, reason: str, *, details: Mapping[str, Any] | None = None
     ) -> None:
-        if reason not in ACCESS_DENIED_REASONS:
+        if not isinstance(reason, str) or not _ACCESS_DENIED_REASON_RE.fullmatch(
+            reason
+        ):
             raise ValueError(f"unsupported access-denial reason: {reason!r}")
         self.reason = reason
         self.details = dict(details or {})
