@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
+
+import pytest
 
 
 SCRIPT = Path(__file__).parents[2] / "scripts" / "ci" / "check_disk_headroom.py"
@@ -24,3 +27,22 @@ def test_headroom_rejects_below_minimum_with_actionable_message() -> None:
     assert "ENOSPC" in message
     assert "10.00 GiB required" in message
     assert "completed worktrees" in message
+
+
+@pytest.mark.parametrize("minimum", ["nan", "inf", "-inf", "0", "-1"])
+def test_cli_rejects_non_positive_or_non_finite_minimum(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    minimum: str,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(SCRIPT), f"--minimum-gib={minimum}", "--path", str(SCRIPT.parent)],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        MODULE.main()
+
+    assert exc_info.value.code == 2
+    assert "--minimum-gib must be greater than zero" in capsys.readouterr().err

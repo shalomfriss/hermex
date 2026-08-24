@@ -58,6 +58,10 @@ jobs:
             web/node_modules
           key: node-modules-scripts-${{ runner.os }}-node26-npm12-${{ hashFiles('package-lock.json') }}
 
+      - name: Verify capacity before dependency installation
+        if: steps.node-modules-cache.outputs.cache-hit != 'true'
+        run: npm run capacity:check
+
       - uses: ./.github/actions/retry
         if: steps.node-modules-cache.outputs.cache-hit != 'true'
         with:

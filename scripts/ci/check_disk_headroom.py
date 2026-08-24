@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import shutil
 from pathlib import Path
 
@@ -31,7 +32,7 @@ def main() -> int:
     parser.add_argument("--minimum-gib", type=float, default=DEFAULT_MINIMUM_GIB)
     parser.add_argument("--path", type=Path, default=Path.cwd())
     args = parser.parse_args()
-    if args.minimum_gib <= 0:
+    if not math.isfinite(args.minimum_gib) or args.minimum_gib <= 0:
         parser.error("--minimum-gib must be greater than zero")
 
     free_bytes = shutil.disk_usage(args.path).free
