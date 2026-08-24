@@ -810,11 +810,7 @@ Like the Nous provider, it auto-loads and only registers itself once it's config
 
 #### Configuration
 
-Configure an **issuer** and a **client_id**. Public clients use PKCE alone;
-confidential clients add a client secret while retaining PKCE. The plugin
-fetches the IDP's `authorization_endpoint`, `token_endpoint`, and `jwks_uri`
-from `{issuer}/.well-known/openid-configuration`, so you never hardcode
-endpoint URLs.
+Configure an **issuer** and a **client_id** (a public PKCE client — no client secret). The plugin fetches the IDP's `authorization_endpoint`, `token_endpoint`, and `jwks_uri` from `{issuer}/.well-known/openid-configuration`, so you never hardcode endpoint URLs.
 
 **`config.yaml`** — the canonical surface:
 
@@ -825,40 +821,18 @@ dashboard:
     self_hosted:
       issuer: https://auth.example.com/application/o/hermes/   # required
       client_id: hermes-dashboard                              # required
-      scopes: "openid profile email groups offline_access"
-      authorization:
-        require_email: true
-        require_verified_email: true
-        allowed_email_domains: ["example.com"]
-        groups_claim: "groups"
-        required_groups: ["hermes-admins"]
+      scopes: "openid profile email"                           # optional (this is the default)
 ```
-
-The `authorization` block is optional and defaults to no admission
-restrictions. When configured, Hermes evaluates it from the verified ID token
-on login, session verification, and refresh. See the
-[Enterprise Dashboard SSO guide](/guides/enterprise-dashboard-sso) for every
-policy key, IdP-specific claim mapping, preflight checks, proxy requirements,
-operations, and rollback.
 
 **Environment variables** — operator overrides (env wins over `config.yaml` when set non-empty; an empty value is treated as unset):
 
 | Env var | Overrides | Notes |
 |---------|-----------|-------|
 | `HERMES_DASHBOARD_OIDC_ISSUER` | `dashboard.oauth.self_hosted.issuer` | OIDC issuer URL — required |
-| `HERMES_DASHBOARD_OIDC_CLIENT_ID` | `dashboard.oauth.self_hosted.client_id` | Client id — required |
+| `HERMES_DASHBOARD_OIDC_CLIENT_ID` | `dashboard.oauth.self_hosted.client_id` | Public client id — required |
 | `HERMES_DASHBOARD_OIDC_SCOPES` | `dashboard.oauth.self_hosted.scopes` | Defaults to `openid profile email` |
-| `HERMES_DASHBOARD_OIDC_CLIENT_SECRET` | Secret only; no `config.yaml` default | Optional; enables confidential-client authentication |
 
-In your IDP, register a public or confidential application/client with the
-authorization-code + PKCE (S256) grant and add the dashboard's callback as an
-allowed redirect URI. The callback is `<dashboard public URL>/auth/callback`
-(see [Public URL override](#public-url-override) for how the dashboard derives
-its public URL behind a proxy). For a confidential client, put
-`HERMES_DASHBOARD_OIDC_CLIENT_SECRET` in `$HERMES_HOME/.env` or your deployment
-secret store; never add it to `config.yaml`. The provider supports
-`client_secret_basic` and `client_secret_post`, selecting from the discovery
-document while continuing to send PKCE.
+In your IDP, register a **public** application/client with the authorization-code + PKCE (S256) grant and add the dashboard's callback as an allowed redirect URI. The callback is `<dashboard public URL>/auth/callback` (see [Public URL override](#public-url-override) for how the dashboard derives its public URL behind a proxy).
 
 #### What it verifies
 
@@ -873,14 +847,7 @@ The provider verifies the OpenID Connect **ID token** (RS256/ES256) against the 
 
 The ID token is what establishes identity — the access token is treated as opaque (the OIDC spec does not require it to be a JWT). Endpoint URLs are required to be HTTPS (loopback `http://` is allowed for local-dev IDPs), and the discovery document's advertised `issuer` must match your configured one (a trailing-slash difference is tolerated). Refresh tokens, when the IDP issues them, are used for silent re-auth via the standard `refresh_token` grant; logout calls the IDP's RFC 7009 `revocation_endpoint` when advertised.
 
-For production, run `hermes dashboard sso check --json` before startup. It
-validates configuration, discovery, endpoint security, callback construction,
-policy syntax, and signing-algorithm compatibility without performing a login
-or exposing secrets.
-
-> Public clients remain the simplest browser-facing setup. Confidential
-> clients are also supported when an IdP requires client authentication; PKCE
-> remains mandatory in both modes.
+> **Confidential clients** (those with a `client_secret`) are not supported yet — configure a public + PKCE client, which is the typical choice for a browser-facing dashboard.
 
 #### Worked example: Keycloak
 
@@ -995,10 +962,7 @@ The provider implements the [Nous Portal OAuth contract v1](https://github.com/N
 5. Server exchanges the code for an access token at `POST /api/oauth/token`, verifies the JWT signature against the Portal's JWKS (`/.well-known/jwks.json`), and sets the `hermes_session_at` cookie.
 6. User is redirected to `/` (or to the original deep-link path via the `next=` query parameter).
 
-Access tokens have a 15-minute TTL. Portal issues a 24-hour rotating refresh
-token for silent session renewal. Each successful refresh replaces both token
-cookies; an expired, revoked, or replayed refresh token clears the session and
-returns the user to `/login`.
+Access tokens have a 15-minute TTL. **There is no refresh token in contract v1** — when the token expires, the SPA's fetch wrapper detects the 401 envelope and full-page-navigates back to `/login` to re-run the flow.
 
 ### Cookies set
 
@@ -1006,7 +970,7 @@ returns the user to `/login`.
 |------|----------|-------|
 | `hermes_session_at` | Token TTL (15 min) | HttpOnly, SameSite=Lax, Secure-when-HTTPS |
 | `hermes_session_pkce` | 10 min | HttpOnly; holds the PKCE verifier + provider hint during the round trip |
-| `hermes_session_rt` | Provider-defined (24 hours for Nous Portal) | HttpOnly rotating refresh token; omitted when a provider returns no refresh token |
+| `hermes_session_rt` | unused in v1 | Reserved for forward-compat; not written when `refresh_token` is empty |
 
 All three are `Path=/` and `SameSite=Lax`. The `Secure` flag is set when the dashboard is reached over HTTPS (detected via the request URL scheme — honours `X-Forwarded-Proto` from an upstream TLS terminator under `proxy_headers=True`).
 
