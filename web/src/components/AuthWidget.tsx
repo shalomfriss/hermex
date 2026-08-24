@@ -24,7 +24,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { api, type AuthMeResponse } from "@/lib/api";
+import { ApiError, api, type AuthMeResponse } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { LogOut } from "lucide-react";
 
@@ -67,6 +67,17 @@ export function AuthWidget({ className }: AuthWidgetProps) {
         // Error with the status code as a prefix; the global 401
         // handler only redirects on the structured envelope, so a plain
         // 401 from /api/auth/me with no envelope bubbles up here.
+        if (
+          err instanceof ApiError &&
+          err.status === 403 &&
+          typeof err.body === "object" &&
+          err.body !== null &&
+          "error" in err.body &&
+          err.body.error === "access_denied"
+        ) {
+          setError("Your account is not authorized for this dashboard");
+          return;
+        }
         const msg = err instanceof Error ? err.message : String(err);
         if (msg.startsWith("401:") || msg.startsWith("403:")) {
           setHidden(true);
