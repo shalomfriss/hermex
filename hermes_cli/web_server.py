@@ -1316,6 +1316,9 @@ _CATEGORY_MERGE: Dict[str, str] = {
     # `session.terminal_continue` is the only schema-surfaced session field —
     # fold it into general rather than spawning a one-field orphan category.
     "session": "general",
+    # `readiness.disk_min_free_gb` is the only schema-surfaced readiness field;
+    # keep it in general rather than creating a one-field settings tab.
+    "readiness": "general",
 }
 
 # Display order for tabs — unlisted categories sort alphabetically after these.
