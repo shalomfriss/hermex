@@ -7,11 +7,13 @@ import { authState, resetAuthStateForTests } from "./auth-state";
 const reloadMocks = vi.hoisted(() => ({
   attemptDashboardTokenReloadOnce: vi.fn(() => false),
   clearDashboardTokenReloadAttempt: vi.fn(),
+  redirectDashboardToLogin: vi.fn(),
 }));
 
 vi.mock("./dashboard-auth-reload", () => ({
   attemptDashboardTokenReloadOnce: reloadMocks.attemptDashboardTokenReloadOnce,
   clearDashboardTokenReloadAttempt: reloadMocks.clearDashboardTokenReloadAttempt,
+  redirectDashboardToLogin: reloadMocks.redirectDashboardToLogin,
 }));
 
 const SESSION_HEADER = "X-Hermes-Session-Token";
@@ -21,6 +23,7 @@ beforeEach(() => {
   reloadMocks.attemptDashboardTokenReloadOnce.mockReset();
   reloadMocks.attemptDashboardTokenReloadOnce.mockReturnValue(false);
   reloadMocks.clearDashboardTokenReloadAttempt.mockReset();
+  reloadMocks.redirectDashboardToLogin.mockReset();
 
   Object.defineProperty(window, "__HERMES_SESSION_TOKEN__", {
     configurable: true,
