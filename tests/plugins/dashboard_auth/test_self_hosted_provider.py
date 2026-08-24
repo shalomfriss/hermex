@@ -31,6 +31,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 
 import plugins.dashboard_auth.self_hosted as oidc_plugin
 from hermes_cli.dashboard_auth import (
+    AccessDeniedError,
     InvalidCodeError,
     LoginStart,
     ProviderError,
@@ -133,6 +134,7 @@ def _make_provider(
     scopes: str | None = None,
     client_secret: str | None = None,
     auth_methods: Any = "__unset__",
+    authorization: Dict[str, Any] | None = None,
 ):
     """Construct a provider with discovery + JWKS stubbed (no network).
 
@@ -146,6 +148,8 @@ def _make_provider(
         kwargs["scopes"] = scopes
     if client_secret is not None:
         kwargs["client_secret"] = client_secret
+    if authorization is not None:
+        kwargs["authorization"] = authorization
     p = oidc_plugin.SelfHostedOIDCProvider(**kwargs)
     # Pre-seed discovery so nothing hits the network.
     disco = dict(_DISCOVERY_DOC)
@@ -334,6 +338,18 @@ class TestStartLogin:
 
         assert parts["nonce"] == params["nonce"]
         assert len(params["nonce"]) >= 43
+
+    def test_max_auth_age_is_sent_when_policy_enables_it(self, rsa_keypair):
+        provider = _make_provider(
+            rsa_keypair, authorization={"max_auth_age_seconds": 900}
+        )
+        result = provider.start_login(
+            redirect_uri="https://hermes.example/auth/callback"
+        )
+        params = dict(
+            urllib.parse.parse_qsl(urllib.parse.urlparse(result.redirect_url).query)
+        )
+        assert params["max_age"] == "900"
 
 
 # ---------------------------------------------------------------------------
@@ -585,6 +601,58 @@ class TestConfidentialClient:
 # ---------------------------------------------------------------------------
 
 
+class TestAuthorizationPolicyIntegration:
+    def test_policy_is_applied_to_login_verify_and_refresh(self, rsa_keypair):
+        provider = _make_provider(
+            rsa_keypair, authorization={"required_groups": ["admins"]}
+        )
+        denied = _mint_id_token(rsa_keypair, groups=["viewers"])
+
+        with pytest.raises(AccessDeniedError, match="group_required"):
+            provider.verify_session(access_token=denied)
+
+        denied_response = _mock_post(
+            200,
+            {
+                "id_token": denied,
+                "token_type": "Bearer",
+                "refresh_token": "rotated",
+            },
+        )
+        with patch(
+            "plugins.dashboard_auth.self_hosted.httpx.post",
+            return_value=denied_response,
+        ):
+            with pytest.raises(AccessDeniedError, match="group_required"):
+                provider.complete_login(
+                    code="abc",
+                    state="s",
+                    code_verifier="v",
+                    redirect_uri="https://hermes.example/auth/callback",
+                )
+            with pytest.raises(AccessDeniedError, match="group_required"):
+                provider.refresh_session(refresh_token="recognized-refresh")
+
+    def test_explicit_tenant_claim_becomes_session_org_id(self, rsa_keypair):
+        provider = _make_provider(
+            rsa_keypair,
+            authorization={
+                "tenant_claim": "tid",
+                "allowed_tenants": ["tenant-a"],
+            },
+        )
+        token = _mint_id_token(
+            rsa_keypair,
+            groups=["admins"],
+            org_id="legacy-org",
+            extra_claims={"tid": "tenant-a"},
+        )
+
+        session = provider.verify_session(access_token=token)
+
+        assert session.org_id == "tenant-a"
+
+
 class TestVerifySession:
     @pytest.fixture
     def provider(self, rsa_keypair):
@@ -780,6 +848,23 @@ class TestPluginRegister:
         registered = ctx.register_dashboard_auth_provider.call_args.args[0]
         assert registered._issuer == _ISSUER
         assert registered._client_id == _CLIENT_ID
+
+    def test_malformed_authorization_policy_prevents_registration(self, patch_config):
+        patch_config(
+            {
+                "self_hosted": {
+                    "issuer": _ISSUER,
+                    "client_id": _CLIENT_ID,
+                    "authorization": {"required_groups": "admins"},
+                }
+            }
+        )
+        ctx = MagicMock()
+
+        oidc_plugin.register(ctx)
+
+        ctx.register_dashboard_auth_provider.assert_not_called()
+        assert "required_groups" in oidc_plugin.LAST_SKIP_REASON
 
 
     def test_config_load_failure_falls_through(self, monkeypatch):

@@ -87,6 +87,7 @@ ACCESS_DENIED_REASONS: frozenset[str] = frozenset(
         "acr_denied",
         "mfa_required",
         "auth_too_old",
+        "auth_time_in_future",
         "claim_malformed",
     }
 )
