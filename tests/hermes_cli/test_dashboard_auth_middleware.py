@@ -24,6 +24,7 @@ from hermes_cli.dashboard_auth import (
     LoginStart,
     Session,
     clear_providers,
+    get_provider,
     register_provider,
 )
 from hermes_cli.dashboard_auth.cookies import (
@@ -379,6 +380,49 @@ def test_provider_bootstrap_exposes_only_safe_authorization_metadata(gated_app):
     }
     assert "secret-customer.example" not in response.text
     assert "secret-admin-group" not in response.text
+
+
+def test_logout_invalidates_session_until_subsequent_login(gated_app):
+    _complete_stub_login(gated_app)
+    assert gated_app.get("/api/auth/me").status_code == 200
+
+    logout = gated_app.post("/auth/logout", follow_redirects=True)
+
+    assert logout.status_code == 200
+    assert logout.url.path == "/login"
+    assert len(logout.history) == 1
+    prefixed_deletions = [
+        cookie
+        for cookie in logout.history[0].headers.get_list("set-cookie")
+        if cookie.startswith("__Host-") or cookie.startswith("__Secure-")
+    ]
+    assert prefixed_deletions
+    assert all("Secure" in cookie for cookie in prefixed_deletions)
+    assert gated_app.get("/api/auth/me").status_code == 401
+    deep_link = gated_app.get("/sessions", follow_redirects=False)
+    assert deep_link.status_code == 302
+    assert deep_link.headers["location"].startswith(("/login", "/auth/login"))
+
+    _complete_stub_login(gated_app)
+    assert gated_app.get("/api/auth/me").status_code == 200
+
+
+def test_logout_clears_session_when_provider_revocation_fails(
+    gated_app, monkeypatch
+):
+    _complete_stub_login(gated_app)
+    provider = get_provider("stub")
+    assert provider is not None
+
+    def _revoke_failure(*, refresh_token: str) -> None:
+        raise RuntimeError("simulated provider outage")
+
+    monkeypatch.setattr(provider, "revoke_session", _revoke_failure)
+
+    logout = gated_app.post("/auth/logout", follow_redirects=False)
+
+    assert logout.status_code == 302
+    assert gated_app.get("/api/auth/me").status_code == 401
 
 
 # ---------------------------------------------------------------------------
