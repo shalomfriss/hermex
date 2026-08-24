@@ -295,17 +295,22 @@ describe('status-chrome timers under an occluding overlay', () => {
     nowSpy.mockReturnValue(T0 + 300_000)
     rule.clear()
     resetOverlayState()
-    await flush()
 
-    const resumed = rule.output()
+    // Wait for the store-driven reveal render itself instead of assuming
+    // React's scheduler will run within a fixed 20ms wall-clock sleep. Under
+    // runner contention that sleep can win the race while the output is still
+    // empty, even though the reveal render follows correctly.
+    await vi.waitFor(() => {
+      const resumed = rule.output()
 
-    // Caught up to real elapsed time, not stuck on the pre-overlay values.
-    expect(resumed).toContain('6m 0s')
-    expect(resumed).toContain('✓ 5m 5s')
-    expect(resumed).not.toContain('1m 0s')
+      // Caught up to real elapsed time, not stuck on the pre-overlay values.
+      expect(resumed).toContain('6m 0s')
+      expect(resumed).toContain('✓ 5m 5s')
+      expect(resumed).not.toContain('1m 0s')
 
-    // …and the clocks are running again.
-    expect(oneSecondTimers(intervalSpy)).toBe(2)
+      // …and the clocks are running again.
+      expect(oneSecondTimers(intervalSpy)).toBe(2)
+    })
   })
 
   it('tears the clocks down when an overlay opens over an already-running status rule', async () => {
