@@ -14,7 +14,10 @@ import type {
 } from "@/lib/api";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Badge } from "@nous-research/ui/ui/components/badge";
-import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
+import {
+  AccessibleSelect as Select,
+  AccessibleSelectOption as SelectOption,
+} from "@/components/AccessibleSelect";
 import { Switch } from "@nous-research/ui/ui/components/switch";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { CommandBlock, CopyButton } from "@nous-research/ui/ui/components/command-block";
@@ -552,6 +555,7 @@ export default function PluginsPage() {
 
                     <Select
                       id="mem-provider"
+                      aria-label={t.pluginsPage.memoryProviderLabel}
                       className="w-full"
                       value={memorySel}
                       onValueChange={setMemorySel}
@@ -641,6 +645,7 @@ export default function PluginsPage() {
                             {field.kind === "select" ? (
                               <Select
                                 id={`memory-${field.key}`}
+                                aria-label={field.label}
                                 className="w-full"
                                 value={String(value ?? "")}
                                 onValueChange={(next) =>
@@ -655,6 +660,7 @@ export default function PluginsPage() {
                               </Select>
                             ) : field.kind === "boolean" ? (
                               <Switch
+                                aria-label={field.label}
                                 checked={Boolean(value)}
                                 onCheckedChange={(next) =>
                                   setMemoryValues((current) => ({ ...current, [field.key]: next }))
@@ -693,7 +699,7 @@ export default function PluginsPage() {
                                   <Button
                                     ghost
                                     size="icon"
-                                    aria-label={secretIsVisible ? "Hide secret" : "Show secret"}
+                                    aria-label={`${secretIsVisible ? "Hide" : "Show"} ${field.label}`}
                                     onClick={() =>
                                       setSecretVisible((current) => ({
                                         ...current,
@@ -736,6 +742,7 @@ export default function PluginsPage() {
 
                   <Select
                     id="ctx-engine"
+                    aria-label={t.pluginsPage.contextEngineLabel}
                     className="w-full"
                     value={contextSel}
                     onValueChange={setContextSel}
@@ -796,7 +803,11 @@ export default function PluginsPage() {
 
               <div className="flex items-center gap-3">
 
-                <Switch checked={installForce} onCheckedChange={setInstallForce} />
+                <Switch
+                  aria-label={t.pluginsPage.forceReinstall}
+                  checked={installForce}
+                  onCheckedChange={setInstallForce}
+                />
 
                 <span className="text-xs tracking-[0.06em] text-text-secondary">
                   {t.pluginsPage.forceReinstall}
@@ -805,7 +816,11 @@ export default function PluginsPage() {
 
               <div className="flex items-center gap-3">
 
-                <Switch checked={installEnable} onCheckedChange={setInstallEnable} />
+                <Switch
+                  aria-label={t.pluginsPage.enableAfterInstall}
+                  checked={installEnable}
+                  onCheckedChange={setInstallEnable}
+                />
 
                 <span className="text-xs tracking-[0.06em] text-text-secondary">
                   {t.pluginsPage.enableAfterInstall}

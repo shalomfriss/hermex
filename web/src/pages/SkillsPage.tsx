@@ -327,6 +327,7 @@ export default function SkillsPage() {
         <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
         <Input
           className="h-8 rounded-none pl-8 pr-7 text-xs"
+          aria-label={t.common.search}
           placeholder={t.common.search}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -682,31 +683,34 @@ export default function SkillsPage() {
           </DialogHeader>
           <div className="grid gap-3 py-2">
             <div className="grid gap-1.5">
-              <label className="text-xs font-medium text-muted-foreground">
+              <label htmlFor="learn-skill-local-source" className="text-xs font-medium text-muted-foreground">
                 Local file or directory
               </label>
               <Input
+                id="learn-skill-local-source"
                 placeholder="~/projects/some-sdk  (read with read_file / search_files)"
                 value={learnDir}
                 onChange={(e) => setLearnDir(e.target.value)}
               />
             </div>
             <div className="grid gap-1.5">
-              <label className="text-xs font-medium text-muted-foreground">
+              <label htmlFor="learn-skill-url" className="text-xs font-medium text-muted-foreground">
                 URL
               </label>
               <Input
+                id="learn-skill-url"
                 placeholder="https://docs.example.com/api  (fetched with web_extract)"
                 value={learnUrl}
                 onChange={(e) => setLearnUrl(e.target.value)}
               />
             </div>
             <div className="grid gap-1.5">
-              <label className="text-xs font-medium text-muted-foreground">
+              <label htmlFor="learn-skill-notes" className="text-xs font-medium text-muted-foreground">
                 Anything else — describe the workflow, paste notes, or say
                 "what we just did"
               </label>
               <textarea
+                id="learn-skill-notes"
                 className="min-h-[90px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 placeholder="e.g. how I file an expense report: open the portal, …"
                 value={learnText}
@@ -733,7 +737,7 @@ export default function SkillsPage() {
   );
 }
 
-function SkillRow({
+export function SkillRow({
   skill,
   toggling,
   onToggle,
@@ -744,6 +748,7 @@ function SkillRow({
     <div className="group flex items-start gap-3 px-3 py-2.5 transition-colors hover:bg-muted/40">
       <div className="pt-0.5 shrink-0">
         <Switch
+          aria-label={`${skill.enabled ? "Disable" : "Enable"} ${skill.name}`}
           checked={skill.enabled}
           onCheckedChange={onToggle}
           disabled={toggling}

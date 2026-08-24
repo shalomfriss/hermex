@@ -1,7 +1,16 @@
-import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
+import {
+  AccessibleSelect as Select,
+  AccessibleSelectOption as SelectOption,
+} from "@/components/AccessibleSelect";
 import { Switch } from "@nous-research/ui/ui/components/switch";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
+
+function accessibleFieldName(fieldKey: string): string {
+  return fieldKey
+    .replace(/[._-]+/g, " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
 
 function FieldHint({ schema, schemaKey }: { schema: Record<string, unknown>; schemaKey: string }) {
   const keyPath = schemaKey.includes(".") ? schemaKey : "";
@@ -37,6 +46,8 @@ function NestedValueEditor({
   value: unknown;
   onChange: (v: unknown) => void;
 }) {
+  const accessibleName = accessibleFieldName(fieldKey);
+
   if (isRecord(value)) {
     return (
       <div className="grid gap-2 border border-border p-2">
@@ -75,6 +86,7 @@ function NestedValueEditor({
 
   return (
     <Input
+      aria-label={accessibleName}
       value={formatScalar(value)}
       onChange={(e) => onChange(e.target.value)}
       className="text-xs"
@@ -90,6 +102,7 @@ export function AutoField({
 }: AutoFieldProps) {
   const rawLabel = schemaKey.split(".").pop() ?? schemaKey;
   const label = rawLabel.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  const accessibleName = accessibleFieldName(schemaKey);
 
   if (isRecord(value) || (Array.isArray(value) && value.some((item) => isRecord(item)))) {
     return (
@@ -108,7 +121,11 @@ export function AutoField({
           <Label className="text-sm">{label}</Label>
           <FieldHint schema={schema} schemaKey={schemaKey} />
         </div>
-        <Switch checked={!!value} onCheckedChange={onChange} />
+        <Switch
+          aria-label={accessibleName}
+          checked={!!value}
+          onCheckedChange={onChange}
+        />
       </div>
     );
   }
@@ -119,7 +136,11 @@ export function AutoField({
       <div className="grid gap-1.5">
         <Label className="text-sm">{label}</Label>
         <FieldHint schema={schema} schemaKey={schemaKey} />
-        <Select value={String(value ?? "")} onValueChange={(v) => onChange(v)}>
+        <Select
+          aria-label={accessibleName}
+          value={String(value ?? "")}
+          onValueChange={(v) => onChange(v)}
+        >
           {options.map((opt) => (
             <SelectOption key={opt} value={opt}>
               {opt || "(none)"}
@@ -136,6 +157,7 @@ export function AutoField({
         <Label className="text-sm">{label}</Label>
         <FieldHint schema={schema} schemaKey={schemaKey} />
         <Input
+          aria-label={accessibleName}
           type="number"
           value={value === undefined || value === null ? "" : String(value)}
           onChange={(e) => {
@@ -160,6 +182,7 @@ export function AutoField({
         <Label className="text-sm">{label}</Label>
         <FieldHint schema={schema} schemaKey={schemaKey} />
         <textarea
+          aria-label={accessibleName}
           className="flex min-h-[80px] w-full border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           value={String(value ?? "")}
           onChange={(e) => onChange(e.target.value)}
@@ -174,6 +197,7 @@ export function AutoField({
         <Label className="text-sm">{label}</Label>
         <FieldHint schema={schema} schemaKey={schemaKey} />
         <Input
+          aria-label={accessibleName}
           value={Array.isArray(value) ? value.join(", ") : String(value ?? "")}
           onChange={(e) =>
             onChange(
@@ -193,7 +217,11 @@ export function AutoField({
     <div className="grid gap-1.5">
       <Label className="text-sm">{label}</Label>
       <FieldHint schema={schema} schemaKey={schemaKey} />
-      <Input value={String(value ?? "")} onChange={(e) => onChange(e.target.value)} />
+      <Input
+        aria-label={accessibleName}
+        value={String(value ?? "")}
+        onChange={(e) => onChange(e.target.value)}
+      />
     </div>
   );
 }

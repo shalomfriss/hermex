@@ -6,7 +6,10 @@ import {
 import { Clock, Pause, Pencil, Play, Trash2, X, Zap } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
-import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
+import {
+  AccessibleSelect as Select,
+  AccessibleSelectOption as SelectOption,
+} from "@/components/AccessibleSelect";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
@@ -1177,9 +1180,7 @@ export default function CronPage() {
                     ghost
                     size="icon"
                     title={state === "paused" ? t.cron.resume : t.cron.pause}
-                    aria-label={
-                      state === "paused" ? t.cron.resume : t.cron.pause
-                    }
+                    aria-label={`${state === "paused" ? t.cron.resume : t.cron.pause} ${title}`}
                     onClick={() => handlePauseResume(job)}
                     className={
                       state === "paused" ? "text-success" : "text-warning"
@@ -1193,7 +1194,7 @@ export default function CronPage() {
                     size="icon"
                     disabled={triggeringJobKeys.has(jobKey)}
                     title={t.cron.triggerNow}
-                    aria-label={t.cron.triggerNow}
+                    aria-label={`${t.cron.triggerNow} ${title}`}
                     onClick={() => handleTrigger(job)}
                   >
                     {triggeringJobKeys.has(jobKey) ? <Spinner /> : <Zap />}
@@ -1203,7 +1204,7 @@ export default function CronPage() {
                     ghost
                     size="icon"
                     title="Edit job"
-                    aria-label="Edit job"
+                    aria-label={`Edit ${title}`}
                     onClick={() => openEditModal(job)}
                   >
                     <Pencil />
@@ -1214,7 +1215,7 @@ export default function CronPage() {
                     destructive
                     size="icon"
                     title={t.common.delete}
-                    aria-label={t.common.delete}
+                    aria-label={`${t.common.delete} ${title}`}
                     onClick={() => jobDelete.requestDelete(jobKey)}
                   >
                     <Trash2 />

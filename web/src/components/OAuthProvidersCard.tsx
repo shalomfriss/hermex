@@ -216,15 +216,19 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                 <div className="flex items-center gap-1.5 shrink-0">
                   {p.docs_url && (
                     <a
+                      aria-label={`Open ${p.name} documentation`}
                       href={p.docs_url}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="inline-flex"
                       title={`Open ${p.name} docs`}
                     >
-                      <Button ghost size="icon">
+                      <span
+                        aria-hidden="true"
+                        className="inline-flex h-9 w-9 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+                      >
                         <ExternalLink />
-                      </Button>
+                      </span>
                     </a>
                   )}
                   {!p.status.logged_in && p.flow !== "external" && (

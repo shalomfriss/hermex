@@ -147,6 +147,7 @@ function EnvVarRow({
         <div className="flex items-center gap-2 shrink-0">
           {info.url && (
             <a
+              aria-label={`${t.env.getKey}: ${varKey}`}
               href={info.url}
               target="_blank"
               rel="noreferrer"
@@ -183,6 +184,7 @@ function EnvVarRow({
         <div className="flex items-center gap-2 shrink-0">
           {info.url && (
             <a
+              aria-label={`${t.env.getKey}: ${varKey}`}
               href={info.url}
               target="_blank"
               rel="noreferrer"
@@ -216,6 +218,7 @@ function EnvVarRow({
         </div>
         {info.url && (
           <a
+            aria-label={`${t.env.getKey}: ${varKey}`}
             href={info.url}
             target="_blank"
             rel="noreferrer"
@@ -294,6 +297,7 @@ function EnvVarRow({
         <div className="flex items-center gap-2">
           <Input
             autoFocus
+            aria-label={`${varKey} value`}
             type="text"
             value={edits[varKey]}
             onChange={(e) =>
@@ -406,6 +410,7 @@ function ProviderGroupCard({
         <div className="flex items-center gap-2 shrink-0">
           {keyUrl && (
             <a
+              aria-label={`${t.env.getKey}: ${group.name}`}
               href={keyUrl}
               target="_blank"
               rel="noreferrer"
