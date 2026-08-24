@@ -138,8 +138,15 @@ test('parseLoopbackCallback throws on state mismatch (CSRF)', () => {
 
 test('parseLoopbackCallback surfaces a gateway error param', () => {
   assert.throws(
-    () => parseLoopbackCallback('/callback?error=access_denied&error_description=nope', 'xyz'),
+    () => parseLoopbackCallback('/callback?error=access_denied&error_description=nope&state=xyz', 'xyz'),
     /access_denied.*nope/i
+  )
+})
+
+test('parseLoopbackCallback rejects an error callback with mismatched state', () => {
+  assert.throws(
+    () => parseLoopbackCallback('/callback?error=access_denied&state=attacker', 'expected'),
+    /state mismatch/i
   )
 })
 

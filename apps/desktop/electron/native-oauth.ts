@@ -147,6 +147,14 @@ export function parseLoopbackCallback(requestUrl: string, expectedState: string)
   // requestUrl is the path+query the loopback server received, e.g.
   // "/callback?code=...&state=...". Resolve against a dummy origin to parse.
   const parsed = new URL(requestUrl, 'http://127.0.0.1')
+  const state = parsed.searchParams.get('state') || ''
+
+  if (!expectedState || state !== expectedState) {
+    // Bind successful and error callbacks alike to the authorization that
+    // opened this listener; otherwise a local process could inject a denial.
+    throw new Error('Loopback callback state mismatch (possible CSRF)')
+  }
+
   const error = parsed.searchParams.get('error')
 
   if (error) {
@@ -155,16 +163,9 @@ export function parseLoopbackCallback(requestUrl: string, expectedState: string)
   }
 
   const code = parsed.searchParams.get('code') || ''
-  const state = parsed.searchParams.get('state') || ''
 
   if (!code) {
     throw new Error('Loopback callback missing authorization code')
-  }
-
-  if (!expectedState || state !== expectedState) {
-    // Never redeem a code that arrived with a mismatched state — it may be a
-    // forged callback trying to inject an attacker's code.
-    throw new Error('Loopback callback state mismatch (possible CSRF)')
   }
 
   return { code }

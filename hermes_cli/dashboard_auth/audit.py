@@ -28,6 +28,7 @@ _write_lock = threading.Lock()
 _REDACTED_FIELDS: frozenset = frozenset({
     "access_token", "refresh_token", "code", "code_verifier",
     "state", "ticket", "cookie", "Authorization", "authorization",
+    "nonce", "raw_claims", "claims", "client_secret",
 })
 
 
@@ -40,6 +41,7 @@ class AuditEvent(enum.Enum):
     LOGIN_START = "login_start"
     LOGIN_SUCCESS = "login_success"
     LOGIN_FAILURE = "login_failure"
+    ACCESS_DENIED = "access_denied"
     LOGOUT = "logout"
     REFRESH_SUCCESS = "refresh_success"
     REFRESH_FAILURE = "refresh_failure"
