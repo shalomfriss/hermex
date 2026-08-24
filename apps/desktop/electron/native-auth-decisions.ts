@@ -76,6 +76,22 @@ export function resolveOauthRestAuth(nativeAccessToken: string | null | undefine
   return { kind: 'cookie' }
 }
 
+/** Select OAuth REST auth while enforcing the multipart credential boundary. */
+export function resolveOauthRequestAuth(
+  nativeAccessToken: string | null | undefined,
+  hasUpload: boolean
+): OauthRestAuth {
+  const auth = resolveOauthRestAuth(nativeAccessToken)
+
+  if (hasUpload && auth.kind !== 'bearer') {
+    throw new Error(
+      'File upload requires native OAuth bearer authentication. This legacy cookie-only gateway must be upgraded.'
+    )
+  }
+
+  return auth
+}
+
 export type ReadinessProbeAuth = OauthRestAuth | { kind: 'token'; token: string | null } | { kind: 'public' }
 
 /**

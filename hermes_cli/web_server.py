@@ -3856,15 +3856,18 @@ async def get_status(request: Request, profile: Optional[str] = None):
         # IDP round trip, password providers complete interactively at /login
         # in the system browser (where OS password managers can autofill; an
         # embedded webview cannot reach them). Token-only credentials (e.g.
-        # drain) don't count. Absent field / missing "native_pkce" ⇒ older
-        # gateway ⇒ desktop falls back automatically.
+        # drain) don't count. The version field is emitted only when capability
+        # resolution itself succeeded; absence/malformed/outage must remain a
+        # retryable desktop error rather than selecting cookie compatibility.
         auth_flows: list[str] = []
+        auth_flows_version: int | None = None
         try:
             from hermes_cli.dashboard_auth import (
                 list_providers as _list_providers,
                 list_session_providers as _list_session_providers,
             )
             auth_providers = [p.name for p in _list_providers()]
+            auth_flows_version = 1
             if auth_required:
                 auth_flows.append("cookie")
                 if _list_session_providers():
@@ -3911,6 +3914,8 @@ async def get_status(request: Request, profile: Optional[str] = None):
             "auth_flows": auth_flows,
             "nous_session_valid": nous_session_valid,
         }
+        if auth_flows_version is not None:
+            status["auth_flows_version"] = auth_flows_version
 
         # Stable per-install identity (see get_install_id above). First call
         # may touch disk, so keep it off the event loop; afterwards it is a

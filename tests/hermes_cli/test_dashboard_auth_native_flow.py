@@ -386,6 +386,7 @@ def test_status_loopback_mode_has_no_auth_flows():
         client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
         body = client.get("/api/status").json()
         assert body["auth_required"] is False
+        assert body["auth_flows_version"] == 1
         assert body["auth_flows"] == []
     finally:
         web_server.app.state.auth_required = prev_required
@@ -441,8 +442,93 @@ def test_status_advertises_native_pkce_for_password_only_gateway(
     assert login.status_code == 200
     body = pw_gated_client.get("/api/status").json()
     assert body["auth_required"] is True
+    assert body["auth_flows_version"] == 1
     assert "cookie" in body["auth_flows"]
     assert "native_pkce" in body["auth_flows"]
+
+
+def test_native_logout_revokes_only_the_bearer_bound_identity(gated_client):
+    verifier, challenge = _make_pkce()
+    code, _state = _walk_native_login(
+        gated_client,
+        redirect_uri="http://127.0.0.1:53999/cb",
+        challenge=challenge,
+    )
+    tokens = gated_client.post(
+        "/auth/native/token",
+        json={"code": code, "code_verifier": verifier},
+    ).json()
+
+    denied = gated_client.post(
+        "/api/auth/native/revoke",
+        headers={"Authorization": f"Bearer {tokens['access_token']}"},
+        json={
+            "refresh_token": tokens["refresh_token"],
+            "provider": tokens["provider"],
+            "user_id": "another-user",
+        },
+    )
+    assert denied.status_code == 403
+
+    revoked = gated_client.post(
+        "/api/auth/native/revoke",
+        headers={"Authorization": f"Bearer {tokens['access_token']}"},
+        json={
+            "refresh_token": tokens["refresh_token"],
+            "provider": tokens["provider"],
+            "user_id": tokens["user_id"],
+        },
+    )
+    assert revoked.status_code == 200, revoked.text
+    assert revoked.json() == {"ok": True, "revoked": True}
+
+    already_dead = gated_client.post(
+        "/api/auth/native/revoke",
+        headers={"Authorization": f"Bearer {tokens['access_token']}"},
+        json={
+            "refresh_token": "already-revoked",
+            "provider": tokens["provider"],
+            "user_id": tokens["user_id"],
+        },
+    )
+    assert already_dead.status_code == 200
+    assert already_dead.json() == {"ok": True, "revoked": True}
+
+
+def test_native_logout_idp_outage_is_idempotent_and_does_not_fail_local_logout(
+    gated_client, monkeypatch
+):
+    from hermes_cli.dashboard_auth import get_provider
+    from hermes_cli.dashboard_auth.base import ProviderError
+
+    verifier, challenge = _make_pkce()
+    code, _state = _walk_native_login(
+        gated_client,
+        redirect_uri="http://127.0.0.1:53999/cb",
+        challenge=challenge,
+    )
+    tokens = gated_client.post(
+        "/auth/native/token",
+        json={"code": code, "code_verifier": verifier},
+    ).json()
+    provider = get_provider(tokens["provider"])
+    assert provider is not None
+
+    def unavailable(*, refresh_token):
+        raise ProviderError("idp offline")
+
+    monkeypatch.setattr(provider, "refresh_session", unavailable)
+    response = gated_client.post(
+        "/api/auth/native/revoke",
+        headers={"Authorization": f"Bearer {tokens['access_token']}"},
+        json={
+            "refresh_token": tokens["refresh_token"],
+            "provider": tokens["provider"],
+            "user_id": tokens["user_id"],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "revoked": False}
 
 
 def test_native_authorize_password_provider_redirects_to_login(

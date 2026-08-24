@@ -19,11 +19,11 @@
  * RFC 8252 experience — its own PKCE pair, its own loopback redirect, tokens
  * it stores itself.
  *
- * Capability detection: the gateway advertises supported flows on the public
- * /api/status `auth_flows` array. `native_pkce` present ⇒ use this flow;
- * absent (older gateway) ⇒ the caller falls back to the embedded-webview
- * cookie flow. This is the "observable ladder / compatibility fallback tied to
- * an identified older runtime" the desktop guide requires.
+ * Capability detection: the gateway advertises a versioned `auth_flows`
+ * contract on public /api/status. Only a valid v1 response that explicitly
+ * omits `native_pkce` may select the embedded-cookie compatibility flow.
+ * Outages, absent fields, and malformed bodies stay retryable and must never
+ * silently switch the authenticated identity.
  */
 
 import { createHash, randomBytes } from 'node:crypto'
@@ -31,6 +31,7 @@ import { createHash, randomBytes } from 'node:crypto'
 // The gateway status field that lists supported auth flows. See
 // hermes_cli/web_server.py status handler.
 const NATIVE_FLOW_ID = 'native_pkce'
+const AUTH_FLOWS_VERSION = 1
 
 export interface NativePkcePair {
   verifier: string
@@ -79,19 +80,25 @@ export function statusSupportsNativeFlow(statusBody: any): boolean {
 
 /**
  * Decide the login strategy for a gated gateway from its status body.
- * Returns 'native' when the gateway can do RFC 8252 AND we're not forced to
- * the legacy path; 'embedded' otherwise (older gateway ⇒ webview fallback).
- *
- * `forceEmbedded` lets a user/setting or an env override pin the legacy flow
- * (e.g. a corporate proxy that blocks loopback). Precedence written down here,
- * in one place, as a pure function — per the desktop "observable ladder" rule.
+ * Returns 'native' when the gateway advertises RFC 8252 and 'embedded' only
+ * when a valid versioned capability explicitly omits it. Missing, malformed,
+ * or unknown-version responses throw so callers stay retryable without
+ * changing identity.
  */
-export function resolveLoginStrategy(statusBody: any, opts: { forceEmbedded?: boolean } = {}): 'native' | 'embedded' {
-  if (opts.forceEmbedded) {
-    return 'embedded'
+export function resolveLoginStrategy(statusBody: any): 'native' | 'embedded' {
+  if (!statusBody || statusBody.auth_flows_version === undefined) {
+    throw new Error('Could not confirm the gateway native-auth capability; retry when the gateway is reachable.')
   }
 
-  return statusSupportsNativeFlow(statusBody) ? 'native' : 'embedded'
+  if (statusBody.auth_flows_version !== AUTH_FLOWS_VERSION) {
+    throw new Error(`Unsupported auth capability version: ${String(statusBody.auth_flows_version)}`)
+  }
+
+  if (!Array.isArray(statusBody.auth_flows)) {
+    throw new Error('Gateway native-auth capability response is malformed; retry without changing auth mode.')
+  }
+
+  return statusBody.auth_flows.includes(NATIVE_FLOW_ID) ? 'native' : 'embedded'
 }
 
 /**
@@ -135,6 +142,14 @@ export function nativeRefreshUrl(baseUrl: string): string {
   const prefix = parsed.pathname.replace(/\/+$/, '')
 
   return `${parsed.protocol}//${parsed.host}${prefix}/auth/native/refresh`
+}
+
+/** Authenticated, identity-bound native refresh-token revocation endpoint. */
+export function nativeRevokeUrl(baseUrl: string): string {
+  const parsed = new URL(baseUrl)
+  const prefix = parsed.pathname.replace(/\/+$/, '')
+
+  return `${parsed.protocol}//${parsed.host}${prefix}/api/auth/native/revoke`
 }
 
 /**
@@ -237,4 +252,4 @@ export function tokenNeedsRefresh(
   return nowSeconds >= tokens.expiresAt - skewSeconds
 }
 
-export { NATIVE_FLOW_ID }
+export { AUTH_FLOWS_VERSION, NATIVE_FLOW_ID }

@@ -199,17 +199,17 @@ import {
   oauthSessionIsLive,
   resolveGatedDownloadAuth,
   resolveJsonBody,
-  resolveOauthRestAuth,
+  resolveOauthRequestAuth,
   resolveReadinessProbeAuth
 } from './native-auth-decisions'
 import {
   nativeRefreshUrl,
   type NativeTokenSet,
-  parseTokenResponse,
-  resolveLoginStrategy,
-  tokenNeedsRefresh
+  resolveLoginStrategy
 } from './native-oauth'
 import { runNativeLogin } from './native-oauth-login'
+import { runNativeLogout } from './native-oauth-logout'
+import { ensureNativeAccessTokenWith } from './native-token-refresh'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import {
@@ -4897,7 +4897,9 @@ function fetchJson(url, token, options: any = {}) {
           const text = Buffer.concat(chunks).toString('utf8')
 
           if ((res.statusCode || 500) >= 400) {
-            reject(new Error(`${res.statusCode}: ${text || res.statusMessage}`))
+            const error: any = new Error(`${res.statusCode}: ${text || res.statusMessage}`)
+            error.statusCode = res.statusCode || 500
+            reject(error)
 
             return
           }
@@ -5974,7 +5976,7 @@ async function gatewayAuthProviders(baseUrl, headers = {}) {
 // answers before the SPA catch-all). `probeIsCredentialed` tells
 // waitForHermesReady how to read a 401 — rejected session vs gated route.
 async function buildReadinessHealthProbe(baseUrl, authMode, token) {
-  const nativeAt = authMode === 'oauth' ? await ensureNativeAccessToken(baseUrl).catch(() => null) : null
+  const nativeAt = authMode === 'oauth' ? await ensureNativeAccessToken(baseUrl) : null
   const probeAuth = resolveReadinessProbeAuth(authMode, nativeAt, token)
 
   if (probeAuth.kind === 'bearer') {
@@ -7301,48 +7303,16 @@ function postJsonNoAuth(url: string, body: unknown, opts: any = {}) {
 }
 
 // Return a valid native access token for baseUrl, refreshing via
-// /auth/native/refresh if the stored one is at/near expiry. Returns null when
-// there are no tokens or the refresh is terminally rejected (caller re-logins).
+// /auth/native/refresh if the stored one is at/near expiry. Returns null only
+// when no native session exists; every refresh failure throws, preventing a
+// request from silently switching to a cookie identity.
 async function ensureNativeAccessToken(baseUrl: string): Promise<string | null> {
-  const tokens = _loadNativeTokens(baseUrl)
-
-  if (!tokens) {
-    return null
-  }
-
-  if (!tokenNeedsRefresh(tokens, Math.floor(Date.now() / 1000))) {
-    return tokens.accessToken
-  }
-
-  if (!tokens.refreshToken) {
-    // Access token expired and no RT to rotate — force re-login.
-    _clearNativeTokens(baseUrl)
-
-    return null
-  }
-
-  try {
-    const body = await postJsonNoAuth(
-      nativeRefreshUrl(baseUrl),
-      { refresh_token: tokens.refreshToken, provider: tokens.provider },
-      { timeoutMs: 10_000 }
-    )
-
-    const rotated = parseTokenResponse(body)
-    _storeNativeTokens(baseUrl, rotated)
-
-    return rotated.accessToken
-  } catch (error: any) {
-    // A 401 means the RT is dead (session_expired) — drop tokens so the UI
-    // prompts a fresh native login. A 503/transient keeps them for a retry.
-    if (error && error.statusCode === 401) {
-      _clearNativeTokens(baseUrl)
-
-      return null
-    }
-
-    throw error
-  }
+  return ensureNativeAccessTokenWith(baseUrl, {
+    load: () => _loadNativeTokens(baseUrl),
+    store: tokens => _storeNativeTokens(baseUrl, tokens),
+    clear: () => _clearNativeTokens(baseUrl),
+    postRefresh: body => postJsonNoAuth(nativeRefreshUrl(baseUrl), body, { timeoutMs: 10_000 })
+  })
 }
 
 // OAuth-session download that streams the response body straight to a
@@ -7497,7 +7467,7 @@ function readGatewayErrorText(res): Promise<string> {
 
 async function gatedFileAuth(connection) {
   const nativeAt =
-    connection.authMode === 'oauth' ? await ensureNativeAccessToken(connection.baseUrl).catch(() => null) : null
+    connection.authMode === 'oauth' ? await ensureNativeAccessToken(connection.baseUrl) : null
 
   return resolveGatedDownloadAuth(connection.authMode, nativeAt, connection.token)
 }
@@ -7604,7 +7574,7 @@ async function saveGatewayFileViaDataUrl(connection, profile, filePath, ctx: any
 async function mintGatewayWsTicket(baseUrl, headers = {}) {
   return withTransientRetries(async () => {
     // Native flow: mint the ticket with the bearer token, no cookie involved.
-    const nativeAt = await ensureNativeAccessToken(baseUrl).catch(() => null)
+    const nativeAt = await ensureNativeAccessToken(baseUrl)
 
     if (nativeAt) {
       const body = (await fetchJson(`${baseUrl}/api/auth/ws-ticket`, null, {
@@ -9544,7 +9514,7 @@ async function requestJsonForProfile(profile: string, path: string, method: stri
   if (conn.authMode === 'oauth') {
     // Native RFC 8252 flow: authenticate with the bearer token (cookieless)
     // when we hold one for this gateway; otherwise use the cookie partition.
-    const nativeAt = await ensureNativeAccessToken(conn.baseUrl).catch(() => null)
+    const nativeAt = await ensureNativeAccessToken(conn.baseUrl)
 
     if (nativeAt) {
       return fetchJson(url, null, { ...opts, bearer: nativeAt, headers: conn.headers })
@@ -13172,20 +13142,16 @@ async function fetchJsonForBackend(
   const url = `${descriptor.baseUrl}${path}`
 
   if (descriptor.authMode === 'oauth') {
-    // The OAuth cookie path rides electron.net with JSON headers; multipart
-    // isn't wired there. Fail loudly rather than corrupting the upload.
-    if (opts.upload) {
-      throw new Error('File uploads are not supported against OAuth-gated remote backends yet.')
-    }
+    const nativeAt = await ensureNativeAccessToken(descriptor.baseUrl)
+    const requestAuth = resolveOauthRequestAuth(nativeAt, Boolean(opts.upload))
 
-    const nativeAt = await ensureNativeAccessToken(descriptor.baseUrl).catch(() => null)
-
-    if (nativeAt) {
+    if (requestAuth.kind === 'bearer') {
       return fetchJson(url, null, {
         method: opts.method,
         body: opts.body,
+        upload: opts.upload,
         timeoutMs: opts.timeoutMs,
-        bearer: nativeAt,
+        bearer: requestAuth.token,
         headers: descriptor.headers
       })
     }
@@ -13213,46 +13179,29 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
   //   - advertises "native_pkce" in auth_flows → run the system-browser +
   //     loopback + PKCE flow. No embedded webview, tokens held by the app
   //     (encrypted keychain), REST/WS authenticated by bearer — no cookies.
-  //   - older gateway without native_pkce → fall back to the legacy embedded
-  //     BrowserWindow cookie flow, preserving compatibility.
+  //   - a valid v1 capability explicitly lacking native_pkce → use the legacy
+  //     BrowserWindow cookie flow. Missing/malformed/outage never downgrades.
   // This is the "observable ladder + compatibility fallback tied to an
   // identified older runtime" the desktop guide requires.
   const baseUrl = normalizeRemoteBaseUrl(rawUrl)
 
-  let statusBody: any = null
-
-  try {
-    statusBody = await fetchPublicJson(`${baseUrl}/api/status`, { timeoutMs: 8_000 })
-  } catch {
-    // Can't read status — fall through to the embedded flow, which has its
-    // own error handling and works against any gated gateway.
-  }
+  const statusBody = await fetchPublicJson(`${baseUrl}/api/status`, { timeoutMs: 8_000 })
 
   const strategy = resolveLoginStrategy(statusBody)
 
   if (strategy === 'native') {
-    try {
-      const tokens = await runNativeLogin(baseUrl, {
-        openExternal: url => shell.openExternal(url),
-        postJson: (url, body, opts) => postJsonNoAuth(url, body, opts),
-        rememberLog
-      })
+    const tokens = await runNativeLogin(baseUrl, {
+      openExternal: url => shell.openExternal(url),
+      postJson: (url, body, opts) => postJsonNoAuth(url, body, opts),
+      rememberLog
+    })
 
-      _storeNativeTokens(baseUrl, tokens)
-      // Confirmed sign-in — release the reauth latch so the next
-      // startHermes() re-dials instead of replaying the stale rejection.
-      remoteReauthFailure = null
+    _storeNativeTokens(baseUrl, tokens)
+    // Confirmed sign-in — release the reauth latch so the next
+    // startHermes() re-dials instead of replaying the stale rejection.
+    remoteReauthFailure = null
 
-      return { ok: true, baseUrl, connected: true }
-    } catch (error) {
-      rememberLog(
-        `[native-oauth] native login failed (${
-          error instanceof Error ? error.message : String(error)
-        }); falling back to embedded flow`
-      )
-      // Fall through to the embedded flow so a native-flow hiccup (blocked
-      // loopback, user closed the browser) still lets the user sign in.
-    }
+    return { ok: true, baseUrl, connected: true }
   }
 
   // Legacy embedded-webview cookie flow.
@@ -13271,20 +13220,34 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
 })
 ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, rawUrl) => {
   const baseUrl = rawUrl ? normalizeRemoteBaseUrl(rawUrl) : ''
-  await clearOauthSession(baseUrl || undefined)
+  let nativeLogout: { revoked: boolean; error?: string } = { revoked: false }
 
-  // Also drop any native (RFC 8252) bearer tokens for this gateway so a
-  // logout clears BOTH auth shapes.
   if (baseUrl) {
-    _clearNativeTokens(baseUrl)
+    nativeLogout = await runNativeLogout(baseUrl, _loadNativeTokens(baseUrl), {
+      revoke: async request => {
+        await fetchJson(request.url, null, {
+          method: 'POST',
+          body: request.body,
+          bearer: request.bearer,
+          timeoutMs: 10_000
+        })
+      },
+      clearLocal: () => _clearNativeTokens(baseUrl)
+    })
+
+    if (nativeLogout.error) {
+      rememberLog(`[native-oauth] remote revocation failed during logout: ${nativeLogout.error}`)
+    }
   }
+
+  await clearOauthSession(baseUrl || undefined)
 
   // Report against the SAME liveness notion the Settings indicator uses
   // (AT-or-RT cookie, or a native token) so a logout that left any session
   // behind is reflected as still-connected rather than silently signed-out.
   const connected = baseUrl ? (await hasLiveOauthSession(baseUrl)) || hasNativeSession(baseUrl) : false
 
-  return { ok: true, connected }
+  return { ok: true, connected, revoked: nativeLogout.revoked }
 })
 
 // --- Hermes Cloud (cloud-auto-discovery Phase 3) ---
@@ -13834,22 +13797,17 @@ async function handleHermesApiRequest(request) {
     // to the OAuth partition so the cookie attaches automatically. Token/local
     // modes keep using the static session-token header.
     if (connection.authMode === 'oauth') {
-      // The OAuth path rides electron.net with JSON headers; multipart isn't
-      // wired there. Fail loudly rather than corrupting the upload.
-      if (request?.upload) {
-        throw new Error('File uploads are not supported against OAuth-gated remote backends yet.')
-      }
-
       // Native bearer first (cookieless). ensureNativeAccessToken transparently
-      // refreshes a near-expiry AT via /auth/native/refresh; a null return means
-      // no native session (resolveOauthRestAuth then selects the cookie path).
-      const nativeAt = await ensureNativeAccessToken(connection.baseUrl).catch(() => null)
-      const restAuth = resolveOauthRestAuth(nativeAt)
+      // refreshes a near-expiry AT via /auth/native/refresh. Null means there
+      // was never a native session; refresh failures throw without retargeting.
+      const nativeAt = await ensureNativeAccessToken(connection.baseUrl)
+      const restAuth = resolveOauthRequestAuth(nativeAt, Boolean(request?.upload))
 
       if (restAuth.kind === 'bearer') {
         response = await fetchJson(url, null, {
           method: request?.method,
           body: request?.body,
+          upload: request?.upload,
           timeoutMs,
           bearer: restAuth.token
         })
