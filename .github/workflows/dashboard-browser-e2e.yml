@@ -45,17 +45,6 @@ jobs:
         with:
           command: uv sync --locked --python 3.11 --extra all --extra dev
 
-      - name: Enforce 12 GiB browser provisioning headroom
-        shell: bash
-        run: |
-          available_kib="$(df -Pk "$GITHUB_WORKSPACE" | tail -n 1 | tr -s ' ' | cut -d ' ' -f 4)"
-          required_kib=$((12 * 1024 * 1024))
-          echo "Browser provisioning headroom: ${available_kib} KiB available; ${required_kib} KiB required"
-          if (( available_kib < required_kib )); then
-            echo "::error::Playwright provisioning requires at least 12 GiB free"
-            exit 1
-          fi
-
       - name: Run production dashboard browser acceptance
         working-directory: web
         env:
