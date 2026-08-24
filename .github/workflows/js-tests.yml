@@ -7,12 +7,15 @@ on:
 jobs:
   check:
     name: JS & TS checks
-    # One job replaces a 14-leg matrix and avoids repeated checkout, Node
-    # installation, and node_modules restoration overhead.
+    # One 32-core job replaces a 14-leg matrix. The matrix spread about 612s
+    # of check payload over 4-core runners. It paid about 371s of repeated
+    # setup to do it: 14 checkouts, 14 node installs, 14 node_modules
+    # restores.
     #
-    # One runner installs one time. vitest, tsc and eslint each size
+    # One larger runner installs one time. vitest, tsc and eslint each size
     # their own worker pool from the core count.
-    runs-on: ubuntu-latest
+    # Fork PRs use a standard hosted runner; upstream keeps its larger runner.
+    runs-on: ${{ github.repository == 'shalomfriss/hermex' && 'ubuntu-latest' || 'ubuntu-latest-32-core' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

@@ -38,7 +38,7 @@ concurrency:
 jobs:
   os-tests:
     name: ${{ matrix.name }}
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ github.repository == 'shalomfriss/hermex' && matrix.fork_runner || matrix.runner }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -46,9 +46,11 @@ jobs:
         include:
           - name: macOS-only tests
             runner: macos-latest
+            fork_runner: macos-latest
             marker: macos_only
           - name: Windows-only tests
-            runner: windows-latest
+            runner: windows-latest-32-core
+            fork_runner: windows-latest
             marker: windows_only
     steps:
       - name: Checkout code

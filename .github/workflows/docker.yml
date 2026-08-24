@@ -76,7 +76,7 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: ubuntu-latest
+            runner: ubuntu-latest-32-core
             platform: linux/amd64
             cache-from: type=gha,scope=docker-amd64
             cache-to: type=gha,mode=max,scope=docker-amd64
@@ -173,8 +173,8 @@ jobs:
         run: |
           # Each of these tests drives a container, so the docker daemon sets
           # the limit and not the processor. This caps the workers. The
-          # default from run_tests.sh is cpu_count*2, which can start too many
-          # containers together for the runner.
+          # default from run_tests.sh is cpu_count*2, which starts 64
+          # containers together on the 32-core amd64 runner.
           HERMES_TEST_WORKERS=$(nproc) scripts/run_tests.sh tests/docker/ --file-timeout 600
 
   # ---------------------------------------------------------------------------
@@ -190,7 +190,7 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: ubuntu-latest
+            runner: ubuntu-latest-32-core
             platform: linux/amd64
             cache-from: type=gha,scope=docker-amd64
             cache-to: type=gha,mode=max,scope=docker-amd64

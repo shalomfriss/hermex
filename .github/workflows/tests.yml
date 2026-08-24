@@ -14,10 +14,11 @@ concurrency:
 jobs:
   test:
     name: Run tests
-    # This fork uses the standard hosted runner so CI is available without
-    # organization-scoped larger-runner labels.
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Upstream runs the whole suite on its 96-core larger runner. This fork
+    # selects a standard hosted runner so fork PRs do not require upstream's
+    # organization-scoped label.
+    runs-on: ${{ github.repository == 'shalomfriss/hermex' && 'ubuntu-latest' || 'ubuntu-latest-96-core' }}
+    timeout-minutes: ${{ github.repository == 'shalomfriss/hermex' && 60 || 30 }}
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -94,9 +95,10 @@ jobs:
           source .venv/bin/activate
           scripts/run_tests.sh
         env:
-          # Two workers per core keeps the standard runner busy while slower
-          # files wait on subprocesses and filesystem operations.
-          HERMES_TEST_WORKERS: 8
+          # Upstream's measured optimum is one worker per core. The fork's
+          # standard hosted runner uses two workers per core while slower files
+          # wait on subprocesses and filesystem operations.
+          HERMES_TEST_WORKERS: ${{ github.repository == 'shalomfriss/hermex' && 8 || 96 }}
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
