@@ -109,6 +109,10 @@ try:
         WebSocket, WebSocketDisconnect,
     )
     from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.openapi.docs import (
+        get_swagger_ui_html,
+        get_swagger_ui_oauth2_redirect_html,
+    )
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel, SecretStr, field_validator
@@ -125,6 +129,10 @@ except ImportError:
             WebSocket, WebSocketDisconnect,
         )
         from fastapi.middleware.cors import CORSMiddleware
+        from fastapi.openapi.docs import (
+            get_swagger_ui_html,
+            get_swagger_ui_oauth2_redirect_html,
+        )
         from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
         from fastapi.staticfiles import StaticFiles
         from pydantic import BaseModel, SecretStr, field_validator
@@ -489,7 +497,76 @@ def _get_pty_active_session_files(app: "FastAPI") -> dict[str, Path]:
         return app.state.pty_active_session_files
 
 
-app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
+app = FastAPI(
+    title="Hermes Agent",
+    version=__version__,
+    lifespan=_lifespan,
+    docs_url=None,
+)
+
+_DOCS_ASSET_MEDIA_TYPES = {
+    "swagger-ui.css": "text/css",
+    "swagger-ui-bundle.js": "text/javascript",
+}
+
+
+def _docs_html_response(response: HTMLResponse) -> HTMLResponse:
+    """Add document language metadata to FastAPI's generated docs HTML."""
+    html = bytes(response.body).decode("utf-8").replace(
+        "<html>", '<html lang="en">', 1
+    )
+    return HTMLResponse(html)
+
+
+@app.get("/docs", include_in_schema=False)
+async def dashboard_api_docs(request: Request):
+    """Render Swagger UI entirely from the dashboard's own origin."""
+    prefix = _normalise_prefix(request.headers.get("x-forwarded-prefix"))
+    oauth2_redirect_url = (
+        f"{prefix}{app.swagger_ui_oauth2_redirect_url}"
+        if app.swagger_ui_oauth2_redirect_url
+        else None
+    )
+    return _docs_html_response(
+        get_swagger_ui_html(
+            openapi_url=f"{prefix}{app.openapi_url}",
+            title=f"{app.title} - Swagger UI",
+            oauth2_redirect_url=oauth2_redirect_url,
+            init_oauth=app.swagger_ui_init_oauth,
+            swagger_ui_parameters={
+                **(app.swagger_ui_parameters or {}),
+                # Swagger UI otherwise contacts validator.swagger.io after it
+                # loads the local schema, violating the dashboard's same-origin
+                # runtime and strict connect-src policy.
+                "validatorUrl": None,
+            },
+            swagger_js_url=f"{prefix}/docs-assets/swagger-ui-bundle.js",
+            swagger_css_url=f"{prefix}/docs-assets/swagger-ui.css",
+            swagger_favicon_url=f"{prefix}/favicon.ico",
+        )
+    )
+
+
+_DOCS_OAUTH_REDIRECT_PATH = (
+    app.swagger_ui_oauth2_redirect_url or "/docs/oauth2-redirect"
+)
+
+
+@app.get(_DOCS_OAUTH_REDIRECT_PATH, include_in_schema=False)
+async def dashboard_api_docs_oauth2_redirect():
+    return _docs_html_response(get_swagger_ui_oauth2_redirect_html())
+
+
+@app.get("/docs-assets/{filename}", include_in_schema=False)
+async def dashboard_api_docs_asset(filename: str):
+    """Serve the Swagger UI files emitted by the production web build."""
+    media_type = _DOCS_ASSET_MEDIA_TYPES.get(filename)
+    if media_type is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    path = WEB_DIST / "docs-assets" / filename
+    if not path.is_file():
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return FileResponse(path, media_type=media_type)
 
 
 # Memory-provider OAuth connect routes live in the memory layer, not here.
