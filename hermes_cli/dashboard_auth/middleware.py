@@ -20,11 +20,12 @@ import logging
 from typing import Awaitable, Callable
 
 from fastapi import Request
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from hermes_cli.dashboard_auth import list_session_providers
 from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
 from hermes_cli.dashboard_auth.base import (
+    AccessDeniedError,
     DashboardAuthProvider,
     ProviderError,
     RefreshExpiredError,
@@ -161,6 +162,40 @@ def _unauth_response(request: Request, *, reason: str) -> Response:
             status_code=401,
         )
     return RedirectResponse(url=login_url, status_code=302)
+
+
+def access_denied_response(
+    request: Request,
+    *,
+    error: AccessDeniedError,
+    provider: str = "",
+    clear_cookies: bool = False,
+) -> Response:
+    """Return the one generic 403 shape used by every dashboard-auth lane."""
+    provider = provider or error.provider
+    audit_log(
+        AuditEvent.ACCESS_DENIED,
+        provider=provider,
+        reason=error.reason,
+        ip=_client_ip(request),
+    )
+    detail = "Your account is not authorized for this dashboard."
+    path = request.url.path
+    if path.startswith("/api/") or path.startswith("/auth/native/"):
+        response: Response = JSONResponse(
+            {"error": "access_denied", "detail": detail}, status_code=403
+        )
+    else:
+        response = HTMLResponse(
+            f"<!doctype html><title>Access denied</title><h1>{detail}</h1>",
+            status_code=403,
+        )
+    if clear_cookies:
+        from hermes_cli.dashboard_auth.cookies import clear_session_cookies
+        from hermes_cli.dashboard_auth.prefix import prefix_from_request
+
+        clear_session_cookies(response, prefix=prefix_from_request(request))
+    return response
 
 
 def _auto_sso_response(request: Request) -> Response | None:
@@ -302,6 +337,9 @@ def _verify_bearer(request: Request, *, access_token: str):
     for provider in list_session_providers():
         try:
             session = provider.verify_session(access_token=access_token)
+        except AccessDeniedError as e:
+            e.provider = provider.name
+            raise
         except ProviderError as e:
             _log.warning(
                 "dashboard-auth: provider %r unreachable during bearer verify: %s",
@@ -357,6 +395,10 @@ async def gated_auth_middleware(
     if bearer:
         try:
             bearer_session = _verify_bearer(request, access_token=bearer)
+        except AccessDeniedError as e:
+            return access_denied_response(
+                request, error=e, clear_cookies=True
+            )
         except ProviderError as e:
             # At least one provider's IDP/JWKS was unreachable and none
             # verified the token — transient outage, not bad credentials.
@@ -422,6 +464,13 @@ async def gated_auth_middleware(
         for provider in _ordered_session_providers(provider_hint):
             try:
                 session = provider.verify_session(access_token=at)
+            except AccessDeniedError as e:
+                return access_denied_response(
+                    request,
+                    error=e,
+                    provider=provider.name,
+                    clear_cookies=True,
+                )
             except ProviderError as e:
                 _log.warning(
                     "dashboard-auth: provider %r unreachable during verify: %s",
@@ -458,6 +507,10 @@ async def gated_auth_middleware(
                 request,
                 refresh_token=_rt,
                 provider_hint=provider_hint,
+            )
+        except AccessDeniedError as e:
+            return access_denied_response(
+                request, error=e, clear_cookies=True
             )
         except ProviderError as e:
             # At least one provider could not confirm or reject the RT, and no
@@ -562,6 +615,9 @@ def _attempt_refresh(request: Request, *, refresh_token, provider_hint: str | No
     for provider in _ordered_session_providers(provider_hint):
         try:
             new_session = provider.refresh_session(refresh_token=refresh_token)
+        except AccessDeniedError as e:
+            e.provider = provider.name
+            raise
         except RefreshExpiredError:
             audit_log(
                 AuditEvent.REFRESH_FAILURE,

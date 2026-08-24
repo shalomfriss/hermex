@@ -33,6 +33,7 @@ from hermes_cli.dashboard_auth import (
 )
 from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
 from hermes_cli.dashboard_auth.base import (
+    AccessDeniedError,
     InvalidCodeError,
     InvalidCredentialsError,
     ProviderError,
@@ -48,6 +49,7 @@ from hermes_cli.dashboard_auth.cookies import (
     set_session_cookies,
 )
 from hermes_cli.dashboard_auth.login_page import render_login_html
+from hermes_cli.dashboard_auth.middleware import access_denied_response
 
 _log = logging.getLogger(__name__)
 
@@ -518,6 +520,43 @@ async def auth_callback(
                 if key in signature.parameters
             }
         session = p.complete_login(**complete_kwargs)
+    except AccessDeniedError as e:
+        if broker_state:
+            from urllib.parse import urlencode
+
+            from hermes_cli.dashboard_auth import native_flow
+
+            try:
+                pending = native_flow.reject_pending(broker_state)
+            except native_flow.NativeFlowError:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Native login expired or unknown; restart sign-in.",
+                )
+            audit_log(
+                AuditEvent.ACCESS_DENIED,
+                provider=provider_name,
+                reason=e.reason,
+                ip=_client_ip(request),
+            )
+            sep = "&" if "?" in pending.redirect_uri else "?"
+            loopback = (
+                f"{pending.redirect_uri}{sep}"
+                f"{urlencode({'error': 'access_denied', 'state': pending.client_state})}"
+            )
+            response = RedirectResponse(url=loopback, status_code=302)
+            clear_pkce_cookie(response, prefix=_prefix(request))
+            clear_sso_attempt_cookie(response, prefix=_prefix(request))
+            return response
+        response = access_denied_response(
+            request,
+            error=e,
+            provider=provider_name,
+            clear_cookies=True,
+        )
+        clear_pkce_cookie(response, prefix=_prefix(request))
+        clear_sso_attempt_cookie(response, prefix=_prefix(request))
+        return response
     except InvalidCodeError as e:
         audit_log(
             AuditEvent.LOGIN_FAILURE,
@@ -799,6 +838,15 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
         session = p.complete_password_login(
             username=body.username, password=body.password
         )
+    except AccessDeniedError as e:
+        response = access_denied_response(
+            request,
+            error=e,
+            provider=body.provider,
+            clear_cookies=True,
+        )
+        clear_pkce_cookie(response, prefix=_prefix(request))
+        return response
     except InvalidCredentialsError:
         audit_log(
             AuditEvent.LOGIN_FAILURE,
@@ -1068,6 +1116,10 @@ async def auth_native_refresh(request: Request, body: _NativeRefreshBody):
     for provider in providers:
         try:
             session = provider.refresh_session(refresh_token=body.refresh_token)
+        except AccessDeniedError as e:
+            return access_denied_response(
+                request, error=e, provider=provider.name
+            )
         except RefreshExpiredError:
             continue
         except ProviderError as e:

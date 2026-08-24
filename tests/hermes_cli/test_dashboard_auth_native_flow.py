@@ -189,6 +189,56 @@ def _walk_native_login(client, *, redirect_uri, challenge, state="cli-state"):
     return loop_qs["code"][0], loop_qs["state"][0]
 
 
+def test_native_oauth_policy_denial_redirects_immediately_to_loopback(gated_client):
+    """A brokered denial reaches Desktop with its original CSRF state."""
+    from hermes_cli.dashboard_auth import AccessDeniedError
+
+    class DenyingOAuthProvider(StubAuthProvider):
+        name = "native-denying-oauth"
+
+        def complete_login(self, **_kwargs):
+            raise AccessDeniedError(
+                "tenant_denied", details={"raw_claims": "must-not-leak"}
+            )
+
+    clear_providers()
+    register_provider(DenyingOAuthProvider())
+    _verifier, challenge = _make_pkce()
+    client_state = "desktop-csrf-state"
+
+    authorize = gated_client.get(
+        "/auth/native/authorize",
+        params={
+            "provider": "native-denying-oauth",
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "redirect_uri": "http://127.0.0.1:53999/cb",
+            "state": client_state,
+        },
+    )
+    callback = urlparse(authorize.headers["location"])
+    callback_query = parse_qs(callback.query)
+
+    denied = gated_client.get(
+        "/auth/callback",
+        params={
+            "code": callback_query["code"][0],
+            "state": callback_query["state"][0],
+        },
+        cookies=authorize.cookies,
+    )
+
+    assert denied.status_code == 302, denied.text
+    loopback = urlparse(denied.headers["location"])
+    assert f"{loopback.scheme}://{loopback.netloc}{loopback.path}" == (
+        "http://127.0.0.1:53999/cb"
+    )
+    loopback_query = parse_qs(loopback.query)
+    assert loopback_query == {"error": ["access_denied"], "state": [client_state]}
+    assert "tenant_denied" not in denied.headers["location"]
+    assert "raw_claims" not in denied.headers["location"]
+
+
 
 
 def test_native_authorize_rejects_non_loopback_redirect(gated_client):
@@ -588,3 +638,31 @@ def test_native_refresh_dead_token_returns_401(gated_client):
     )
     assert r.status_code == 401
     assert r.json()["error"] == "session_expired"
+
+
+def test_native_refresh_access_denial_is_terminal_and_generic(gated_client):
+    class DenyingNativeProvider(StubAuthProvider):
+        name = "native-denying"
+
+        def refresh_session(self, *, refresh_token: str):
+            from hermes_cli.dashboard_auth import AccessDeniedError
+
+            raise AccessDeniedError(
+                "tenant_denied", details={"raw_claims": "must-not-leak"}
+            )
+
+    clear_providers()
+    register_provider(DenyingNativeProvider())
+
+    response = gated_client.post(
+        "/auth/native/refresh",
+        json={"refresh_token": "recognized-token", "provider": "native-denying"},
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {
+        "error": "access_denied",
+        "detail": "Your account is not authorized for this dashboard.",
+    }
+    assert "tenant_denied" not in response.text
+    assert "raw_claims" not in response.text

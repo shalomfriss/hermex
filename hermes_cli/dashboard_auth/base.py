@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Mapping, Optional
 
 
 @dataclass(frozen=True)
@@ -76,6 +76,44 @@ class ProviderError(Exception):
     """
 
 
+ACCESS_DENIED_REASONS: frozenset[str] = frozenset(
+    {
+        "email_required",
+        "email_unverified",
+        "email_domain_denied",
+        "tenant_denied",
+        "group_required",
+        "role_required",
+        "acr_denied",
+        "mfa_required",
+        "auth_too_old",
+        "claim_malformed",
+    }
+)
+
+
+class AccessDeniedError(Exception):
+    """A verified identity is not authorized to access the dashboard.
+
+    This is terminal for the provider stack: unlike an unknown/expired token,
+    a provider has authenticated the principal and made an authorization
+    decision, so callers must not try fallback providers or refresh into a
+    login loop. ``reason`` is a stable machine-safe policy category. Optional
+    ``details`` are for trusted internal diagnostics and must never be returned
+    to clients or logged without explicit field-level filtering.
+    """
+
+    def __init__(
+        self, reason: str, *, details: Mapping[str, Any] | None = None
+    ) -> None:
+        if reason not in ACCESS_DENIED_REASONS:
+            raise ValueError(f"unsupported access-denial reason: {reason!r}")
+        self.reason = reason
+        self.details = dict(details or {})
+        self.provider = ""
+        super().__init__(reason)
+
+
 class InvalidCodeError(Exception):
     """The OAuth callback ``code`` / ``state`` failed validation.
 
@@ -122,9 +160,11 @@ class DashboardAuthProvider(ABC):
       * ``start_login`` may raise ``ProviderError`` if the IDP is
         unreachable.
       * ``complete_login`` raises ``InvalidCodeError`` on bad code/state;
+        ``AccessDeniedError`` when the verified identity is forbidden;
         ``ProviderError`` if the IDP is unreachable.
       * ``verify_session`` returns ``None`` on expiry / unknown token;
-        raises ``ProviderError`` if the IDP is unreachable. Middleware
+        raises ``AccessDeniedError`` for a recognized but forbidden identity,
+        and ``ProviderError`` if the IDP is unreachable. Middleware
         treats expiry and unreachable differently (expiry → refresh;
         unreachable → 503).
       * ``refresh_session`` raises ``RefreshExpiredError`` when the refresh
@@ -134,6 +174,8 @@ class DashboardAuthProvider(ABC):
         provider rejects the token. Raises ``ProviderError`` on network
         failure; middleware still tries remaining providers, but returns 503
         without clearing cookies if none succeeds and any was unavailable.
+        ``AccessDeniedError`` is terminal and must never fall through to another
+        provider or trigger another refresh.
       * ``revoke_session`` is best-effort and must not raise.
 
     Subclasses MUST set ``name`` (lowercase identifier, stable forever)

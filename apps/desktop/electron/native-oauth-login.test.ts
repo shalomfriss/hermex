@@ -128,18 +128,23 @@ test('runNativeLogin rejects on a state mismatch (CSRF) without redeeming', asyn
 
 test('runNativeLogin surfaces a gateway error param', async () => {
   const { createServer, state } = makeFakeServerFactory()
+  let capturedAuthorizeUrl = ''
 
   const promise = runNativeLogin('https://gw.example.com', {
-    openExternal: async () => undefined,
+    openExternal: async url => {
+      capturedAuthorizeUrl = url
+    },
     postJson: async () => ({}),
     createServer,
     timeoutMs: 5_000
   })
 
   await new Promise(r => setTimeout(r, 5))
-  state.hitCallback('error=access_denied&error_description=user_declined')
+  const clientState = new URL(capturedAuthorizeUrl).searchParams.get('state')
+  state.hitCallback(`error=access_denied&state=${encodeURIComponent(clientState!)}`)
 
   await assert.rejects(promise, /access_denied/i)
+  assert.equal(state.closed, true)
 })
 
 test('runNativeLogin times out when no callback arrives', async () => {

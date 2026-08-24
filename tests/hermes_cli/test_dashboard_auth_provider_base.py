@@ -10,11 +10,23 @@ from __future__ import annotations
 import pytest
 
 from hermes_cli.dashboard_auth.base import (
+    ACCESS_DENIED_REASONS,
+    AccessDeniedError,
     DashboardAuthProvider,
     Session,
     LoginStart,
     assert_protocol_compliance,
 )
+
+
+def test_access_denied_error_accepts_only_stable_reasons():
+    for reason in ACCESS_DENIED_REASONS:
+        error = AccessDeniedError(reason, details={"policy": "configured"})
+        assert error.reason == reason
+        assert error.details == {"policy": "configured"}
+
+    with pytest.raises(ValueError, match="unsupported access-denial reason"):
+        AccessDeniedError("raw-idp-error")
 
 
 # ---------------------------------------------------------------------------

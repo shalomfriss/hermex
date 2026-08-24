@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient
 
 from hermes_cli import web_server
 from hermes_cli.dashboard_auth import LoginStart, clear_providers, register_provider
-from hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE
+from hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE, SESSION_RT_COOKIE
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 
 
@@ -389,6 +389,28 @@ class _UnreachableProvider(StubAuthProvider):
         raise ProviderError("simulated: IDP/JWKS unreachable")
 
 
+class _DenyingProvider(StubAuthProvider):
+    name = "denying"
+    display_name = "Denying IdP (test only)"
+
+    @staticmethod
+    def _deny():
+        from hermes_cli.dashboard_auth import AccessDeniedError
+
+        raise AccessDeniedError(
+            "group_required", details={"raw_claims": "must-not-leak"}
+        )
+
+    def complete_login(self, **kwargs):
+        self._deny()
+
+    def verify_session(self, *, access_token: str):
+        self._deny()
+
+    def refresh_session(self, *, refresh_token: str):
+        self._deny()
+
+
 def _mint_stub_at(stub: StubAuthProvider) -> str:
     """Mint a valid access-token cookie value from a StubAuthProvider via its
     own login round trip (so the HMAC signature matches what verify expects)."""
@@ -447,5 +469,69 @@ def test_all_providers_unreachable_returns_503(_gated_state):
     r = client.get("/api/auth/me")
     assert r.status_code == 503
     assert "unreachable" in r.text.lower()
+
+
+def test_access_denial_is_terminal_for_cookie_bearer_and_refresh(_gated_state):
+    denying = _DenyingProvider()
+    accepting = StubAuthProvider()
+    register_provider(denying)
+    register_provider(accepting)
+    access_token = _mint_stub_at(accepting)
+
+    cookie_client = _gated_state()
+    cookie_client.cookies.set(SESSION_AT_COOKIE, access_token)
+    cookie_response = cookie_client.get("/api/auth/me")
+    assert cookie_response.status_code == 403
+    assert cookie_response.json() == {
+        "error": "access_denied",
+        "detail": "Your account is not authorized for this dashboard.",
+    }
+    assert "raw_claims" not in cookie_response.text
+    assert "group_required" not in cookie_response.text
+    assert "Max-Age=0" in cookie_response.headers["set-cookie"]
+
+    bearer_client = _gated_state()
+    bearer_response = bearer_client.get(
+        "/api/auth/me", headers={"Authorization": f"Bearer {access_token}"}
+    )
+    assert bearer_response.status_code == 403
+
+    refresh_client = _gated_state()
+    refresh_client.cookies.set(SESSION_RT_COOKIE, "recognized-refresh-token")
+    refresh_response = refresh_client.get("/api/auth/me")
+    assert refresh_response.status_code == 403
+    assert "Max-Age=0" in refresh_response.headers["set-cookie"]
+
+
+def test_access_denial_returns_generic_html_for_document_load(_gated_state):
+    register_provider(_DenyingProvider())
+    client = _gated_state()
+    client.cookies.set(SESSION_AT_COOKIE, "recognized-access-token")
+
+    response = client.get("/", headers={"Accept": "text/html"})
+
+    assert response.status_code == 403
+    assert "not authorized" in response.text
+    assert "group_required" not in response.text
+    assert "raw_claims" not in response.text
+
+
+def test_callback_access_denial_clears_transient_and_session_cookies(_gated_state):
+    register_provider(_DenyingProvider())
+    client = _gated_state()
+
+    started = client.get("/auth/login?provider=denying", follow_redirects=False)
+    query = parse_qs(urlparse(started.headers["location"]).query)
+    completed = client.get(
+        "/auth/callback",
+        params={"code": query["code"][0], "state": query["state"][0]},
+        follow_redirects=False,
+    )
+
+    assert completed.status_code == 403
+    assert "not authorized" in completed.text
+    assert "group_required" not in completed.text
+    assert "raw_claims" not in completed.text
+    assert "Max-Age=0" in completed.headers["set-cookie"]
 
 
