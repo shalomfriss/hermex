@@ -234,6 +234,7 @@
 /* ---- Card ------------------------------------------------------------ */
 
 .hermes-kanban-card {
+  position: relative;
   cursor: grab;
   transition: transform 100ms ease, box-shadow 100ms ease;
 }
@@ -243,6 +244,24 @@
 .hermes-kanban-card:active {
   cursor: grabbing;
   transform: scale(0.995);
+}
+
+.hermes-kanban-card-open {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.hermes-kanban-card-open:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 2px;
+}
+.hermes-kanban-card-check-wrap {
+  position: relative;
+  z-index: 2;
 }
 
 .hermes-kanban-card-content {

@@ -17,6 +17,7 @@
     "pretest:e2e": "node ../scripts/ci/check-disk-headroom.mjs --minimum-gib 12",
     "test:e2e": "npm run build && playwright test --config playwright.config.ts",
     "precheck": "node ../scripts/ci/check-disk-headroom.mjs",
+    "test:e2e:kanban": "npm run build && playwright test --config playwright.kanban.config.ts",
     "check": "npm run typecheck && npm run test && npm run lint"
   },
   "dependencies": {
