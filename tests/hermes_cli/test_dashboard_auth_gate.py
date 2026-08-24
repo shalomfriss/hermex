@@ -195,13 +195,13 @@ def test_start_server_public_without_insecure_records_auth_required(monkeypatch)
 # ---------------------------------------------------------------------------
 
 
-def test_start_server_gate_with_provider_proceeds_and_sets_proxy_headers(monkeypatch):
+def test_start_server_gate_with_provider_configures_proxy_boundary(monkeypatch):
     """With at least one provider, public bind + no --insecure starts the server.
 
     The SystemExit-refusing-to-bind guard is REPLACED in gated mode by
     "the gate engages", so as long as a provider is registered the bind
-    succeeds.  uvicorn is called with proxy_headers=True so X-Forwarded-Proto
-    from Fly's TLS terminator is honoured for cookie Secure-flag decisions.
+    succeeds. Uvicorn leaves the socket peer intact; the app records the
+    default loopback proxy boundary for forwarded-proto and client-IP handling.
     """
     from hermes_cli.dashboard_auth import clear_providers, register_provider
     from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
@@ -217,7 +217,32 @@ def test_start_server_gate_with_provider_proceeds_and_sets_proxy_headers(monkeyp
         )
         assert web_server.app.state.auth_required is True
         assert captured["kwargs"].get("host") == "0.0.0.0"
-        assert captured["kwargs"].get("proxy_headers") is True
+        assert captured["kwargs"].get("proxy_headers") is False
+        assert captured["kwargs"].get("forwarded_allow_ips") == ""
+        assert tuple(
+            str(network)
+            for network in web_server.app.state.dashboard_trusted_proxy_networks
+        ) == ("127.0.0.1/32", "::1/128")
+    finally:
+        clear_providers()
+
+
+def test_start_server_disables_proxy_headers_when_no_proxy_is_trusted(monkeypatch):
+    from hermes_cli.dashboard_auth import clear_providers, register_provider
+    from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+
+    clear_providers()
+    register_provider(StubAuthProvider())
+    monkeypatch.setattr(web_server, "load_config", lambda: {"dashboard": {"trusted_proxies": []}})
+    captured = _stub_uvicorn_run(monkeypatch)
+    try:
+        web_server.start_server(
+            host="0.0.0.0", port=9119,
+            open_browser=False, allow_public=False,
+        )
+        assert captured["kwargs"].get("proxy_headers") is False
+        assert captured["kwargs"].get("forwarded_allow_ips") == ""
+        assert web_server.app.state.dashboard_trusted_proxy_networks == ()
     finally:
         clear_providers()
 

@@ -38,6 +38,7 @@ from hermes_cli.dashboard_auth.cookies import (
     set_session_provider_cookie,
     set_sso_attempt_cookie,
 )
+from hermes_cli.dashboard_auth.client_ip import client_ip
 from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
 
 _log = logging.getLogger(__name__)
@@ -88,10 +89,8 @@ def _path_is_public(path: str) -> bool:
 
 
 def _client_ip(request: Request) -> str:
-    fwd = request.headers.get("x-forwarded-for", "")
-    if fwd:
-        return fwd.split(",")[0].strip()
-    return request.client.host if request.client else ""
+    """Compatibility alias for the shared trusted-proxy resolver."""
+    return client_ip(request)
 
 
 def _ordered_session_providers(

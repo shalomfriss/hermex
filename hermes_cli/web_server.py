@@ -928,6 +928,25 @@ DASHBOARD_HEALTH = DashboardHealth()
 
 
 @app.middleware("http")
+async def _trusted_forwarded_proto_middleware(request: Request, call_next):
+    """Apply X-Forwarded-Proto without letting uvicorn consume XFF first.
+
+    Uvicorn's proxy middleware rewrites ``request.client`` before the app can
+    validate a malformed/oversized X-Forwarded-For chain. Keep that middleware
+    disabled and apply only the scheme metadata needed for secure cookies,
+    under the same explicit immediate-peer trust boundary as client-IP
+    resolution.
+    """
+    from hermes_cli.dashboard_auth.client_ip import trusted_peer
+
+    if trusted_peer(request):
+        forwarded_proto = request.headers.get("x-forwarded-proto", "").strip().lower()
+        if forwarded_proto in {"http", "https"}:
+            request.scope["scheme"] = forwarded_proto
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def _dashboard_health_middleware(request: Request, call_next):
     """Outermost middleware: count unhandled exceptions and 5xx responses.
 
@@ -16275,6 +16294,7 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
         # Lazy import — keeps this function importable in test harnesses
         # that don't bring in the dashboard_auth layer.
         from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
+        from hermes_cli.dashboard_auth.client_ip import client_ip
         from hermes_cli.dashboard_auth.ws_tickets import (
             TicketInvalid,
             consume_internal_credential,
@@ -16302,7 +16322,7 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
                 audit_log(
                     AuditEvent.WS_TICKET_REJECTED,
                     reason=f"internal: {exc}",
-                    ip=(ws.client.host if ws.client else ""),
+                    ip=client_ip(ws),
                     path=ws.url.path,
                 )
                 return "internal_invalid", "internal"
@@ -16338,7 +16358,7 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
             audit_log(
                 AuditEvent.WS_TICKET_REJECTED,
                 reason=str(exc),
-                ip=(ws.client.host if ws.client else ""),
+                ip=client_ip(ws),
                 path=ws.url.path,
             )
             return "ticket_invalid", "ticket"
@@ -19366,6 +19386,16 @@ def start_server(
     except Exception:
         _dash_cfg = {}
 
+    from hermes_cli.dashboard_auth.client_ip import parse_trusted_proxy_networks
+
+    _trusted_proxy_networks = parse_trusted_proxy_networks(
+        _dash_cfg.get("trusted_proxies", ["127.0.0.1", "::1"])
+    )
+    # Preserve the socket peer for the shared resolver. The app-level forwarded
+    # proto middleware consults this same trust boundary without letting
+    # uvicorn consume X-Forwarded-For before it can be validated.
+    app.state.dashboard_trusted_proxy_networks = _trusted_proxy_networks
+
     def _ws_ping_setting(key: str, default: float = 20.0) -> float:
         try:
             return float(_dash_cfg.get(key, default))
@@ -19375,14 +19405,14 @@ def start_server(
     config = uvicorn.Config(
         app, host=host, port=port, log_level="warning",
         server_header=False,
-        # proxy_headers defaults to False so _ws_client_is_allowed sees
-        # the real connection peer rather than X-Forwarded-For's rewritten
-        # value (which would defeat the loopback gate when behind a reverse
-        # proxy).  When the OAuth gate is active we are explicitly running
-        # behind a TLS terminator (Fly.io) and need X-Forwarded-Proto to
-        # decide cookie Secure flags, so we flip proxy_headers on for that
-        # mode.
-        proxy_headers=bool(app.state.auth_required),
+        # proxy_headers stays False so auth code can validate X-Forwarded-For
+        # before request.client is rewritten. The app-level trusted-proto
+        # middleware handles X-Forwarded-Proto for secure-cookie decisions.
+        # Keep request.client as the real socket peer. The app resolves XFF
+        # itself so malformed chains can safely fall back to that peer; uvicorn
+        # would otherwise overwrite it before validation is possible.
+        proxy_headers=False,
+        forwarded_allow_ips="",
         # Half-open detection for public binds only (see above). Loopback
         # disables the protocol ping (None) so an event-loop stall can never
         # trigger a false disconnect; a genuinely dead local client is still

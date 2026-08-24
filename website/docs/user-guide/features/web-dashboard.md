@@ -938,13 +938,15 @@ engages the OAuth gate.
 
 ### Public URL override
 
-By default, the dashboard reconstructs the OAuth callback URL from the request — `X-Forwarded-Host` + `X-Forwarded-Proto` + `X-Forwarded-Prefix` (when uvicorn is configured with `proxy_headers=True`, which `start_server` enables under the gate). This works out of the box behind a reverse proxy that sets all three headers correctly.
+By default, the dashboard reconstructs the OAuth callback URL from the request — proxy-preserved host information plus `X-Forwarded-Proto` and `X-Forwarded-Prefix`. Client attribution and `X-Forwarded-Proto` are honored only when the immediate peer matches `dashboard.trusted_proxies`; loopback (`127.0.0.1` and `::1`) is trusted by default. This works out of the box for a reverse proxy on the same host that preserves the public host and sets the forwarding headers correctly.
 
 For deploys behind reverse proxies that don't reliably forward those headers (manual nginx setups, on-prem ingresses, custom-domain deploys with partial proxy chains), set `dashboard.public_url` (or `HERMES_DASHBOARD_PUBLIC_URL`) to the **complete public URL** the dashboard is reached at:
 
 ```yaml
 dashboard:
   public_url: "https://dashboard.example.com/hermes"
+  trusted_proxies:
+    - "10.20.0.0/16" # network from which the ingress connects to Hermes
 ```
 
 When set, the OAuth callback URL becomes `<public_url>/auth/callback` verbatim — `X-Forwarded-Prefix` is ignored on that code path because the operator has explicitly declared the public URL. This is intentional: stacking the prefix on top would double-prefix the common case where the prefix is already baked into `public_url`.
@@ -959,7 +961,24 @@ Same precedence as the other dashboard settings — env wins over `config.yaml`:
 
 Validation rejects values without `http://` / `https://` scheme, without a host, or containing quote / angle / whitespace / control characters. A malformed value silently falls through to header reconstruction so the login flow keeps working rather than dispatching the user to a hostile URL.
 
-> **Note:** `public_url` overrides the OAuth callback URL only. The `Secure` cookie flag is still controlled by `request.url.scheme` (X-Forwarded-Proto under proxy_headers), so an `http://` `public_url` on a TLS-terminated public deploy will produce non-Secure cookies. This is an operator footgun — pair `public_url` with proper TLS termination upstream.
+> **Note:** `public_url` overrides the OAuth callback URL only. The `Secure` cookie flag is still controlled by `request.url.scheme` (`X-Forwarded-Proto` from a trusted proxy), so an `http://` `public_url` on a TLS-terminated public deploy will produce non-Secure cookies. This is an operator footgun — pair `public_url` with proper TLS termination upstream.
+
+### Trusted reverse proxies and client attribution
+
+Authentication throttles, native-login pending capacity, bearer/session failures, and the dashboard audit log all use one canonical client address. A direct request uses the socket peer (`request.client.host`) and ignores caller-supplied `X-Forwarded-For`. Hermes interprets an append-style forwarding chain only when the immediate peer is listed under `dashboard.trusted_proxies`.
+
+Resolution proceeds from right to left: trusted proxy hops are skipped and the first untrusted address is the client boundary. This supports one or multiple append-style proxies without trusting the attacker-controlled left edge. Every hop must be an IP literal; malformed chains, more than 32 hops, or more than 4096 bytes fail safely to the immediate peer. IPv4, IPv6, and IPv4-mapped IPv6 literals are canonicalized so textual variants cannot split rate-limit buckets.
+
+```yaml
+dashboard:
+  # Safest default: only same-host reverse proxies.
+  trusted_proxies: ["127.0.0.1", "::1"]
+
+  # Example for an ingress that reaches Hermes from private networks:
+  # trusted_proxies: ["10.20.0.0/16", "fd00:20::/64"]
+```
+
+List only networks that can connect **directly** to Hermes. Each listed proxy must strip untrusted inbound forwarding headers or append the verified connection peer. Do not use broad ranges such as `0.0.0.0/0` or `::/0`: that makes every direct caller a trusted proxy and restores spoofable attribution. Set `trusted_proxies: []` when Hermes is directly exposed with no reverse proxy; forwarded headers and uvicorn proxy handling are then disabled.
 
 ### OAuth flow
 
@@ -982,7 +1001,7 @@ Access tokens have a 15-minute TTL. **There is no refresh token in contract v1**
 | `hermes_session_pkce` | 10 min | HttpOnly; holds the PKCE verifier + provider hint during the round trip |
 | `hermes_session_rt` | unused in v1 | Reserved for forward-compat; not written when `refresh_token` is empty |
 
-All three are `Path=/` and `SameSite=Lax`. The `Secure` flag is set when the dashboard is reached over HTTPS (detected via the request URL scheme — honours `X-Forwarded-Proto` from an upstream TLS terminator under `proxy_headers=True`).
+All three are `Path=/` and `SameSite=Lax`. The `Secure` flag is set when the dashboard is reached over HTTPS (detected via the request URL scheme — honours `X-Forwarded-Proto` only from an upstream peer listed in `dashboard.trusted_proxies`).
 
 ### Logout
 
