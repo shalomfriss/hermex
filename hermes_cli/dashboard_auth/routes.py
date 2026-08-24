@@ -171,6 +171,14 @@ async def api_auth_providers() -> Any:
                 "supports_password": bool(
                     getattr(p, "supports_password", False)
                 ),
+                "auth_type": (
+                    "password"
+                    if getattr(p, "supports_password", False)
+                    else "oidc"
+                ),
+                "policy_enforced": bool(
+                    getattr(p, "policy_enforced", False)
+                ),
             }
             for p in providers
         ],

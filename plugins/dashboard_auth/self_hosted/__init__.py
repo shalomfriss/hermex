@@ -218,6 +218,11 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
 
     # ---- public API (DashboardAuthProvider) -------------------------------
 
+    @property
+    def policy_enforced(self) -> bool:
+        """Whether any enterprise admission-policy category is enabled."""
+        return self._authorization_policy.enforced
+
     def start_login(self, *, redirect_uri: str) -> LoginStart:
         self._validate_redirect_uri(redirect_uri)
         disco = self._get_discovery()
