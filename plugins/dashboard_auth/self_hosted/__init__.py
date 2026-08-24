@@ -222,6 +222,7 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
             hashlib.sha256(code_verifier.encode("ascii")).digest()
         )
         state = _b64url_no_pad(secrets.token_bytes(32))
+        nonce = _b64url_no_pad(secrets.token_bytes(32))
 
         params = {
             "response_type": "code",
@@ -229,6 +230,7 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
             "redirect_uri": redirect_uri,
             "scope": self._scopes,
             "state": state,
+            "nonce": nonce,
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
         }
@@ -238,7 +240,9 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         # Same flat ``state=…;verifier=…`` cookie shape every provider uses;
         # the auth-route layer prepends ``provider=`` and parses it back out.
         cookie_payload = {
-            "hermes_session_pkce": f"state={state};verifier={code_verifier}",
+            "hermes_session_pkce": (
+                f"state={state};verifier={code_verifier};nonce={nonce}"
+            ),
         }
         return LoginStart(redirect_url=redirect_url, cookie_payload=cookie_payload)
 
@@ -249,6 +253,7 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         state: str,
         code_verifier: str,
         redirect_uri: str,
+        nonce: str = "",
     ) -> Session:
         # ``state`` is verified by the auth-route layer before this call.
         _ = state
@@ -271,6 +276,7 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
             data,
             bad_request_exc=InvalidCodeError,
             extra_headers=extra_headers,
+            expected_nonce=nonce,
         )
 
     def refresh_session(self, *, refresh_token: str) -> Session:
@@ -407,6 +413,7 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         bad_request_exc: type[Exception],
         previous_refresh_token: str = "",
         extra_headers: Optional[Dict[str, str]] = None,
+        expected_nonce: str = "",
     ) -> Session:
         """POST the token endpoint and turn the response into a Session.
 
@@ -461,7 +468,7 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         if token_type and token_type != "bearer":
             raise ProviderError(f"unexpected token_type={token_type!r}")
 
-        claims = self._verify_id_token(id_token)
+        claims = self._verify_id_token(id_token, expected_nonce=expected_nonce)
 
         # Refresh-token rotation: prefer a freshly-issued one, else keep the
         # previous (some IDPs don't rotate). Empty string if neither — the
@@ -580,6 +587,12 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
             if isinstance(auth_methods_raw, list)
             else []
         )
+        signing_algs_raw = payload.get("id_token_signing_alg_values_supported")
+        signing_algs = (
+            [str(alg) for alg in signing_algs_raw]
+            if isinstance(signing_algs_raw, list)
+            else []
+        )
 
         return {
             "issuer": advertised_issuer or self._issuer,
@@ -588,6 +601,7 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
             "jwks_uri": jwks_uri,
             "revocation_endpoint": revocation_endpoint,
             "token_endpoint_auth_methods_supported": token_endpoint_auth_methods,
+            "id_token_signing_alg_values_supported": signing_algs,
         }
 
     # ---- internals: JWT verification --------------------------------------
@@ -608,17 +622,34 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
             )
         return self._jwks_client
 
-    def _verify_id_token(self, id_token: str) -> Dict[str, Any]:
+    def _verify_id_token(
+        self, id_token: str, *, expected_nonce: str = ""
+    ) -> Dict[str, Any]:
         import jwt  # lazy import — keeps startup fast for the ungated path
 
         disco = self._get_discovery()
 
         try:
+            algorithm = str(jwt.get_unverified_header(id_token).get("alg") or "")
+        except jwt.InvalidTokenError as exc:
+            raise ProviderError(f"ID token header is invalid: {exc}") from exc
+        advertised = disco.get("id_token_signing_alg_values_supported")
+        allowed = set(_ALLOWED_ID_TOKEN_ALGS)
+        if isinstance(advertised, list) and advertised:
+            allowed.intersection_update(str(value) for value in advertised)
+        if algorithm not in allowed:
+            raise ProviderError(
+                f"ID token signing algorithm {algorithm!r} is not allowed"
+            )
+
+        try:
             signing_key = self._get_jwks_client().get_signing_key_from_jwt(
                 id_token
             )
-        except jwt.PyJWKClientError as exc:
+        except jwt.PyJWKClientConnectionError as exc:
             raise ProviderError(f"JWKS lookup failed: {exc}") from exc
+        except jwt.PyJWKClientError as exc:
+            raise InvalidCodeError(f"ID token signing key is invalid: {exc}") from exc
         except Exception as exc:  # pragma: no cover - defensive
             raise ProviderError(f"JWKS lookup failed: {exc!r}") from exc
 
@@ -656,6 +687,24 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
             raise ProviderError(
                 f"ID token verification failed: {exc}{details}"
             ) from exc
+
+        audience = claims.get("aud")
+        authorized_party = claims.get("azp")
+        requires_authorized_party = (
+            isinstance(audience, list) and len(audience) > 1
+        )
+        if (authorized_party is not None or requires_authorized_party) and (
+            authorized_party != self._client_id
+        ):
+            raise InvalidCodeError(
+                "ID token authorized party does not match the configured client_id"
+            )
+        if expected_nonce:
+            token_nonce = claims.get("nonce")
+            if not isinstance(token_nonce, str) or not secrets.compare_digest(
+                token_nonce, expected_nonce
+            ):
+                raise InvalidCodeError("ID token nonce mismatch")
 
         return claims
 

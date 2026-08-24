@@ -211,12 +211,13 @@ class NousDashboardAuthProvider(DashboardAuthProvider):
         state: str,
         code_verifier: str,
         redirect_uri: str,
+        nonce: str = "",
     ) -> Session:
         # ``state`` is verified by the auth-route layer before this call
         # (it checks the cookie-stashed state matches the query-param state);
         # we just receive it for symmetry with the protocol. Nous Portal
         # doesn't re-check state at the token endpoint, so we ignore it here.
-        _ = state
+        _ = (state, nonce)
 
         try:
             response = httpx.post(

@@ -92,7 +92,7 @@ def _mint_id_token(
     rsa_keypair: Dict[str, Any],
     *,
     iss: str = _ISSUER,
-    aud: str = _CLIENT_ID,
+    aud: Any = _CLIENT_ID,
     sub: str = "usr_abc",
     email: str | None = "alice@example.com",
     name: str | None = "Alice Example",
@@ -322,6 +322,19 @@ class TestStartLogin:
         parts = dict(seg.split("=", 1) for seg in pkce.split(";") if "=" in seg)
         assert parts["state"] == params["state"]
 
+    def test_nonce_in_cookie_matches_authorization_request(self, provider):
+        result = provider.start_login(
+            redirect_uri="https://hermes.example/auth/callback"
+        )
+        params = dict(
+            urllib.parse.parse_qsl(urllib.parse.urlparse(result.redirect_url).query)
+        )
+        pkce = result.cookie_payload["hermes_session_pkce"]
+        parts = dict(seg.split("=", 1) for seg in pkce.split(";") if "=" in seg)
+
+        assert parts["nonce"] == params["nonce"]
+        assert len(params["nonce"]) >= 43
+
 
 # ---------------------------------------------------------------------------
 # complete_login
@@ -404,6 +417,42 @@ class TestCompleteLogin:
                     state="s",
                     code_verifier="v",
                     redirect_uri="https://hermes.example/auth/callback",
+                )
+
+    def test_matching_nonce_is_accepted(self, provider, rsa_keypair):
+        id_token = _mint_id_token(
+            rsa_keypair, extra_claims={"nonce": "expected-nonce"}
+        )
+        mock_resp = _mock_post(200, {"id_token": id_token, "token_type": "Bearer"})
+        with patch(
+            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+        ):
+            session = provider.complete_login(
+                code="abc",
+                state="s",
+                code_verifier="vfy",
+                redirect_uri="https://hermes.example/auth/callback",
+                nonce="expected-nonce",
+            )
+        assert session.user_id == "usr_abc"
+
+    @pytest.mark.parametrize("token_nonce", [None, "wrong-nonce"])
+    def test_missing_or_mismatched_nonce_is_rejected(
+        self, provider, rsa_keypair, token_nonce
+    ):
+        extra_claims = {} if token_nonce is None else {"nonce": token_nonce}
+        id_token = _mint_id_token(rsa_keypair, extra_claims=extra_claims)
+        mock_resp = _mock_post(200, {"id_token": id_token, "token_type": "Bearer"})
+        with patch(
+            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+        ):
+            with pytest.raises(InvalidCodeError, match="nonce"):
+                provider.complete_login(
+                    code="abc",
+                    state="s",
+                    code_verifier="vfy",
+                    redirect_uri="https://hermes.example/auth/callback",
+                    nonce="expected-nonce",
                 )
 
 
@@ -551,6 +600,55 @@ class TestVerifySession:
         with pytest.raises(ProviderError, match="verification failed"):
             provider.verify_session(access_token=token)
 
+    def test_multi_audience_requires_matching_authorized_party(
+        self, provider, rsa_keypair
+    ):
+        for extra_claims in ({}, {"azp": "some-other-client"}):
+            token = _mint_id_token(
+                rsa_keypair,
+                aud=[_CLIENT_ID, "another-api"],
+                extra_claims=extra_claims,
+            )
+            with pytest.raises(InvalidCodeError, match="authorized party"):
+                provider._verify_id_token(token)
+
+        accepted = _mint_id_token(
+            rsa_keypair,
+            aud=[_CLIENT_ID, "another-api"],
+            extra_claims={"azp": _CLIENT_ID},
+        )
+        assert provider.verify_session(access_token=accepted).user_id == "usr_abc"
+
+    @pytest.mark.parametrize("audience", [_CLIENT_ID, [_CLIENT_ID]])
+    def test_present_authorized_party_must_match_for_every_audience_shape(
+        self, provider, rsa_keypair, audience
+    ):
+        token = _mint_id_token(
+            rsa_keypair,
+            aud=audience,
+            extra_claims={"azp": "some-other-client"},
+        )
+
+        with pytest.raises(InvalidCodeError, match="authorized party"):
+            provider._verify_id_token(token)
+
+    def test_discovery_signing_algorithms_narrow_local_allowlist(
+        self, provider, rsa_keypair
+    ):
+        token = _mint_id_token(rsa_keypair)
+        provider._discovery["id_token_signing_alg_values_supported"] = ["ES256"]
+
+        with pytest.raises(ProviderError, match="signing algorithm"):
+            provider.verify_session(access_token=token)
+
+    def test_missing_discovery_algorithm_list_uses_local_allowlist(
+        self, provider, rsa_keypair
+    ):
+        token = _mint_id_token(rsa_keypair)
+        provider._discovery.pop("id_token_signing_alg_values_supported", None)
+
+        assert provider.verify_session(access_token=token).user_id == "usr_abc"
+
 
     def test_failure_message_surfaces_claims(self, provider, rsa_keypair):
         token = _mint_id_token(rsa_keypair, iss="https://evil.example")
@@ -561,15 +659,28 @@ class TestVerifySession:
         assert f"'{_ISSUER}'" in msg
 
 
-    def test_jwks_unreachable_raises(self, provider, rsa_keypair):
+    def test_jwks_transport_outage_raises_provider_error(self, provider, rsa_keypair):
         token = _mint_id_token(rsa_keypair)
         bad_client = MagicMock()
-        bad_client.get_signing_key_from_jwt.side_effect = jwt.PyJWKClientError(
+        bad_client.get_signing_key_from_jwt.side_effect = jwt.PyJWKClientConnectionError(
             "fetch failed"
         )
         provider._jwks_client = bad_client
         with pytest.raises(ProviderError, match="JWKS"):
             provider.verify_session(access_token=token)
+
+    def test_reachable_jwks_without_matching_kid_is_invalid_code(
+        self, provider, rsa_keypair
+    ):
+        token = _mint_id_token(rsa_keypair)
+        bad_client = MagicMock()
+        bad_client.get_signing_key_from_jwt.side_effect = jwt.PyJWKClientError(
+            "Unable to find a signing key that matches: test-key-1"
+        )
+        provider._jwks_client = bad_client
+
+        with pytest.raises(InvalidCodeError, match="signing key"):
+            provider._verify_id_token(token)
 
     def test_jwks_client_sends_explicit_http_headers(self):
         provider = oidc_plugin.SelfHostedOIDCProvider(

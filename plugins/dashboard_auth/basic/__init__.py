@@ -233,7 +233,13 @@ class BasicAuthProvider(DashboardAuthProvider):
         )
 
     def complete_login(
-        self, *, code: str, state: str, code_verifier: str, redirect_uri: str
+        self,
+        *,
+        code: str,
+        state: str,
+        code_verifier: str,
+        redirect_uri: str,
+        nonce: str = "",
     ) -> Session:
         raise NotImplementedError(
             "BasicAuthProvider is password-only; use complete_password_login."

@@ -15,6 +15,7 @@ The routes:
 """
 from __future__ import annotations
 
+import inspect
 import logging
 import threading
 import time
@@ -453,6 +454,7 @@ async def auth_callback(
     provider_name = parts.get("provider", "")
     expected_state = parts.get("state", "")
     verifier = parts.get("verifier", "")
+    nonce = parts.get("nonce", "")
     # Read next= from the cookie ONLY. The IDP doesn't echo next= back
     # on the callback URL (it only carries ``code`` + ``state``), so any
     # next= query parameter on the callback URL is attacker-controlled
@@ -497,12 +499,25 @@ async def auth_callback(
         )
 
     try:
-        session = p.complete_login(
-            code=code,
-            state=state,
-            code_verifier=verifier,
-            redirect_uri=_redirect_uri(request),
+        complete_kwargs = {
+            "code": code,
+            "state": state,
+            "code_verifier": verifier,
+            "redirect_uri": _redirect_uri(request),
+            "nonce": nonce,
+        }
+        signature = inspect.signature(p.complete_login)
+        accepts_kwargs = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in signature.parameters.values()
         )
+        if not accepts_kwargs:
+            complete_kwargs = {
+                key: value
+                for key, value in complete_kwargs.items()
+                if key in signature.parameters
+            }
+        session = p.complete_login(**complete_kwargs)
     except InvalidCodeError as e:
         audit_log(
             AuditEvent.LOGIN_FAILURE,

@@ -195,6 +195,7 @@ class DashboardAuthProvider(ABC):
         state: str,
         code_verifier: str,
         redirect_uri: str,
+        nonce: str = "",
     ) -> Session: ...
 
     @abstractmethod
