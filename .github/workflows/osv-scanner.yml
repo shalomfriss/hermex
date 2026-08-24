@@ -54,6 +54,9 @@ jobs:
       # fixed artifact name, which the wrapper downloads below.
       results-file-name: osv-results.sarif
       fail-on-vuln: false
+      # Forks can still scan and publish the SARIF artifact, but GitHub rejects
+      # code-scanning uploads when GHAS is unavailable or the token is read-only.
+      upload-sarif: ${{ github.repository == 'NousResearch/hermes-agent' }}
 
   emit-status:
     name: Emit review status
