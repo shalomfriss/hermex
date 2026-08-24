@@ -1599,6 +1599,30 @@ DEFAULT_CONFIG = {
         "oauth": {
             "client_id": "",  # agent:{instance_id} — Portal provisions this
             "portal_url": "",  # blank → use plugin default (production Portal)
+            # Generic OIDC provider. The client secret is intentionally absent:
+            # confidential clients supply it through secret injection via
+            # HERMES_DASHBOARD_OIDC_CLIENT_SECRET.
+            "self_hosted": {
+                "issuer": "",
+                "client_id": "",
+                "scopes": "openid profile email",
+                "authorization": {
+                    "require_email": False,
+                    "require_verified_email": False,
+                    "allowed_email_domains": [],
+                    "groups_claim": "groups",
+                    "required_groups": [],
+                    "roles_claim": "realm_access.roles",
+                    "required_roles": [],
+                    "tenant_claim": "tid",
+                    "allowed_tenants": [],
+                    "acr_claim": "acr",
+                    "allowed_acr_values": [],
+                    "amr_claim": "amr",
+                    "require_mfa": False,
+                    "max_auth_age_seconds": 0,
+                },
+            },
         },
         # Username/password gate configuration — read by the bundled
         # ``dashboard_auth/basic`` plugin (a self-hosted "just put a

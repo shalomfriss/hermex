@@ -810,7 +810,11 @@ Like the Nous provider, it auto-loads and only registers itself once it's config
 
 #### Configuration
 
-Configure an **issuer** and a **client_id** (a public PKCE client — no client secret). The plugin fetches the IDP's `authorization_endpoint`, `token_endpoint`, and `jwks_uri` from `{issuer}/.well-known/openid-configuration`, so you never hardcode endpoint URLs.
+Configure an **issuer** and a **client_id**. Public clients use PKCE alone;
+confidential clients add a client secret while retaining PKCE. The plugin
+fetches the IDP's `authorization_endpoint`, `token_endpoint`, and `jwks_uri`
+from `{issuer}/.well-known/openid-configuration`, so you never hardcode
+endpoint URLs.
 
 **`config.yaml`** — the canonical surface:
 
@@ -829,10 +833,19 @@ dashboard:
 | Env var | Overrides | Notes |
 |---------|-----------|-------|
 | `HERMES_DASHBOARD_OIDC_ISSUER` | `dashboard.oauth.self_hosted.issuer` | OIDC issuer URL — required |
-| `HERMES_DASHBOARD_OIDC_CLIENT_ID` | `dashboard.oauth.self_hosted.client_id` | Public client id — required |
+| `HERMES_DASHBOARD_OIDC_CLIENT_ID` | `dashboard.oauth.self_hosted.client_id` | Client id — required |
 | `HERMES_DASHBOARD_OIDC_SCOPES` | `dashboard.oauth.self_hosted.scopes` | Defaults to `openid profile email` |
+| `HERMES_DASHBOARD_OIDC_CLIENT_SECRET` | Secret only; no `config.yaml` default | Optional; enables confidential-client authentication |
 
-In your IDP, register a **public** application/client with the authorization-code + PKCE (S256) grant and add the dashboard's callback as an allowed redirect URI. The callback is `<dashboard public URL>/auth/callback` (see [Public URL override](#public-url-override) for how the dashboard derives its public URL behind a proxy).
+In your IDP, register a public or confidential application/client with the
+authorization-code + PKCE (S256) grant and add the dashboard's callback as an
+allowed redirect URI. The callback is `<dashboard public URL>/auth/callback`
+(see [Public URL override](#public-url-override) for how the dashboard derives
+its public URL behind a proxy). For a confidential client, put
+`HERMES_DASHBOARD_OIDC_CLIENT_SECRET` in `$HERMES_HOME/.env` or your deployment
+secret store; never add it to `config.yaml`. The provider supports
+`client_secret_basic` and `client_secret_post`, selecting from the discovery
+document while continuing to send PKCE.
 
 #### What it verifies
 
@@ -847,7 +860,9 @@ The provider verifies the OpenID Connect **ID token** (RS256/ES256) against the 
 
 The ID token is what establishes identity — the access token is treated as opaque (the OIDC spec does not require it to be a JWT). Endpoint URLs are required to be HTTPS (loopback `http://` is allowed for local-dev IDPs), and the discovery document's advertised `issuer` must match your configured one (a trailing-slash difference is tolerated). Refresh tokens, when the IDP issues them, are used for silent re-auth via the standard `refresh_token` grant; logout calls the IDP's RFC 7009 `revocation_endpoint` when advertised.
 
-> **Confidential clients** (those with a `client_secret`) are not supported yet — configure a public + PKCE client, which is the typical choice for a browser-facing dashboard.
+> Public clients remain the simplest browser-facing setup. Confidential
+> clients are also supported when an IdP requires client authentication; PKCE
+> remains mandatory in both modes.
 
 #### Worked example: Keycloak
 
