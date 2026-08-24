@@ -27,12 +27,18 @@ import { maybeReloadForLoopbackWsAuthFailure } from "@/lib/dashboard-auth-reload
 export type { ConnectionState, GatewayEvent, GatewayEventName };
 
 export class GatewayClient extends JsonRpcGatewayClient {
-  constructor() {
+  constructor(onAuthDenied?: (code: number) => void) {
     super({
       closedErrorMessage: "WebSocket closed",
       connectErrorMessage: "WebSocket connection failed",
       notConnectedErrorMessage: "gateway not connected",
-      onSocketClose: (event) => maybeReloadForLoopbackWsAuthFailure(event.code),
+      onSocketClose: (event) => {
+        const intercepted = maybeReloadForLoopbackWsAuthFailure(event.code);
+        if (!intercepted && (event.code === 4403 || event.code === 4408)) {
+          onAuthDenied?.(event.code);
+        }
+        return intercepted;
+      },
       requestIdPrefix: "w",
     });
   }

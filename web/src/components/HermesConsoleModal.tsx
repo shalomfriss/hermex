@@ -11,6 +11,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { api } from "@/lib/api";
+import { openConsoleSocket } from "@/lib/console-reconnect";
 import { maybeReloadForLoopbackWsAuthFailure } from "@/lib/dashboard-auth-reload";
 import { cn, themedBody } from "@/lib/utils";
 import { useTheme } from "@/themes";
@@ -344,6 +345,8 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
 
     let cancelled = false;
     let resizeFrame = 0;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let reconnectAttempt = 0;
     const term = new XtermTerminal({
       allowProposedApi: true,
       cursorBlink: true,
@@ -397,15 +400,23 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
     hasReadyFrameRef.current = false;
     writeLine(term, "\x1b[2mConnecting to Hermes Console...\x1b[0m");
 
-    void (async () => {
+    const connect = async () => {
       try {
-        const params = profile ? { profile } : undefined;
-        const url = await api.buildWsUrl("/api/console", params);
-        if (cancelled) return;
-        const ws = new WebSocket(url);
+        // buildWsUrl mints a one-shot ticket in gated mode. Re-run it for every
+        // reconnect; reusing the previous URL would replay a consumed ticket.
+        const ws = await openConsoleSocket(
+          api.buildWsUrl,
+          (url) => new WebSocket(url),
+          profile,
+        );
+        if (cancelled) {
+          ws.close();
+          return;
+        }
         wsRef.current = ws;
 
         ws.onopen = () => {
+          reconnectAttempt = 0;
           setConnectionState("connecting");
         };
 
@@ -431,6 +442,21 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
           activeCommandRef.current = false;
           pendingCommandRef.current = null;
           if (cancelled) return;
+          if (ev.code === 4403 || ev.code === 4408) {
+            setConnectionState("error");
+            writeLine(
+              term,
+              "\x1b[31mConsole access denied. Sign in with an authorized account.\x1b[0m",
+            );
+            return;
+          }
+          if (ev.code === 1001 || ev.code === 1006 || ev.code === 1012) {
+            const delay = Math.min(5_000, 250 * 2 ** reconnectAttempt++);
+            setConnectionState("connecting");
+            writeLine(term, "\x1b[33mConsole disconnected; reconnecting...\x1b[0m");
+            reconnectTimer = setTimeout(() => void connect(), delay);
+            return;
+          }
           setConnectionState(ev.code === 1000 ? "closed" : "error");
           const reason = ev.reason ? ` ${ev.reason}` : "";
           const message =
@@ -441,16 +467,20 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
         };
       } catch (err) {
         if (cancelled) return;
-        setConnectionState("error");
-        writeLine(term, `\x1b[31mConsole unavailable: ${err}\x1b[0m`);
+        const delay = Math.min(5_000, 250 * 2 ** reconnectAttempt++);
+        setConnectionState("connecting");
+        writeLine(term, `\x1b[33mConsole unavailable: ${err}; retrying...\x1b[0m`);
+        reconnectTimer = setTimeout(() => void connect(), delay);
       }
-    })();
+    };
+    void connect();
 
     return () => {
       cancelled = true;
       dataDisposable.dispose();
       ro.disconnect();
       if (resizeFrame) cancelAnimationFrame(resizeFrame);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       wsRef.current?.close();
       wsRef.current = null;
       term.dispose();

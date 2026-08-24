@@ -179,6 +179,14 @@ def _configured_self_hosted() -> tuple[dict[str, Any], str]:
     return self_hosted, str(dashboard.get("public_url") or "")
 
 
+def _configured_topology() -> dict[str, Any]:
+    from hermes_cli.config import load_config
+
+    dashboard = (load_config().get("dashboard") or {})
+    topology = dashboard.get("topology") if isinstance(dashboard, dict) else {}
+    return topology if isinstance(topology, dict) else {}
+
+
 def _resolve(env_name: str, configured: Any) -> str:
     override = os.environ.get(env_name, "").strip()
     return override or str(configured or "").strip()
@@ -262,11 +270,18 @@ def check_sso(*, public_url: str | None = None) -> dict[str, Any]:
             name: {"ok": False, "code": "not_checked"}
             for name in ("configuration", "discovery", "jwks", "callback", "policy")
         },
+        "topology": {},
         "errors": [],
     }
     errors: list[str] = result["errors"]
     checks: dict[str, dict[str, Any]] = result["checks"]
     try:
+        from hermes_cli.dashboard_auth.topology import topology_readiness
+
+        result["topology"] = topology_readiness(_configured_topology())
+        if result["topology"]["status"] != "ok":
+            errors.append(result["topology"]["detail"])
+            return result
         configured, configured_public_url = _configured_self_hosted()
         issuer = _resolve("HERMES_DASHBOARD_OIDC_ISSUER", configured.get("issuer"))
         client_id = _resolve(

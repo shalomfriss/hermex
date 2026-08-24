@@ -1591,6 +1591,17 @@ DEFAULT_CONFIG = {
         # override for backward compatibility. 0 disables the reap
         # (park forever).
         "ws_orphan_reap_grace_s": 20.0,
+        # Dashboard auth pending codes and one-shot WebSocket tickets are
+        # process-local. One replica is safe by default. A multi-replica proxy
+        # must keep every HTTP request and WS upgrade/reconnect for a browser on
+        # the same replica and operators must explicitly attest that routing was
+        # verified. Multi-worker processes remain unsupported.
+        "topology": {
+            "replicas": 1,
+            "state_backend": "process_local",
+            "sticky_routing_verified": False,
+            "native_flow_affinity_verified": False,
+        },
         # OAuth gate configuration (engaged when ``--host`` is set and
         # ``--insecure`` is not). The bundled Nous Portal plugin reads
         # both keys at startup; they are the canonical surface for these

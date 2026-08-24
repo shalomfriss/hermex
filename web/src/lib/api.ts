@@ -23,6 +23,7 @@ import type { DashboardTheme } from "@/themes/types";
 import {
   attemptDashboardTokenReloadOnce,
   clearDashboardTokenReloadAttempt,
+  redirectDashboardToLogin,
 } from "@/lib/dashboard-auth-reload";
 import { applyAuthFailure, authState } from "@/lib/auth-state";
 
@@ -232,11 +233,27 @@ function pluginPath(name: string): string {
  * Tickets are single-use and TTL=30s — every WS connect attempt must
  * fetch a fresh ticket.
  */
-export async function getWsTicket(): Promise<{ ticket: string; ttl_seconds: number }> {
-  const res = await fetch(`${BASE}/api/auth/ws-ticket`, {
+export async function getWsTicket(
+  fetchImpl: typeof fetch = fetch,
+  reauth: (loginUrl?: string) => void = redirectDashboardToLogin,
+): Promise<{ ticket: string; ttl_seconds: number }> {
+  const res = await fetchImpl(`${BASE}/api/auth/ws-ticket`, {
     method: "POST",
     credentials: "include",
   });
+  if (res.status === 401) {
+    let loginUrl: string | undefined;
+    try {
+      const body = (await res.clone().json()) as { login_url?: unknown };
+      if (typeof body.login_url === "string" && body.login_url.startsWith("/")) {
+        loginUrl = body.login_url;
+      }
+    } catch {
+      /* malformed 401 still transitions to the local login route */
+    }
+    reauth(loginUrl);
+    return new Promise(() => {});
+  }
   if (!res.ok) {
     let body: unknown = null;
     let text = res.statusText;

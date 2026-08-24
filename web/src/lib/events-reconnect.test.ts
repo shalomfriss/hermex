@@ -65,6 +65,7 @@ describe("shouldRetryEventsClose", () => {
   it("does not retry auth rejections", () => {
     expect(shouldRetryEventsClose(4401)).toBe(false);
     expect(shouldRetryEventsClose(4403)).toBe(false);
+    expect(shouldRetryEventsClose(4408)).toBe(false);
   });
 
   it("retries when the code is missing", () => {
@@ -72,7 +73,7 @@ describe("shouldRetryEventsClose", () => {
   });
 
   it("never both retries and reports an auth rejection", () => {
-    for (const code of [1000, 1005, 1006, 4401, 4403, 4500]) {
+    for (const code of [1000, 1005, 1006, 4401, 4403, 4408, 4500]) {
       expect(shouldRetryEventsClose(code) && isEventsAuthRejection(code)).toBe(
         false,
       );

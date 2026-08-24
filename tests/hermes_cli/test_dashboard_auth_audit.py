@@ -6,9 +6,13 @@ serialisation so we never leak refresh tokens or JWTs to disk.
 """
 from __future__ import annotations
 
+import errno
 import json
+import os
+import stat
 import pytest
 
+from hermes_cli.dashboard_auth import audit
 from hermes_cli.dashboard_auth.audit import audit_log, AuditEvent
 
 
@@ -63,5 +67,89 @@ def test_audit_redacts_token_like_fields(profile_home):
     assert entry["reason"] == "group_required"
 
 
+def test_audit_log_is_owner_only_even_with_permissive_umask(profile_home):
+    previous = os.umask(0)
+    try:
+        audit_log(AuditEvent.LOGIN_FAILURE, reason="denied")
+    finally:
+        os.umask(previous)
+
+    path = profile_home / "logs" / "dashboard-auth.log"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_audit_rotates_before_exceeding_bound_and_caps_retention(
+    profile_home, monkeypatch
+):
+    monkeypatch.setattr(audit, "MAX_LOG_BYTES", 220)
+    monkeypatch.setattr(audit, "BACKUP_COUNT", 2)
+
+    for index in range(20):
+        audit_log(AuditEvent.LOGIN_FAILURE, reason="x" * 40, attempt=index)
+
+    log_dir = profile_home / "logs"
+    files = sorted(log_dir.glob("dashboard-auth.log*"))
+    assert [path.name for path in files] == [
+        "dashboard-auth.log",
+        "dashboard-auth.log.1",
+        "dashboard-auth.log.2",
+    ]
+    assert all(path.stat().st_size <= audit.MAX_LOG_BYTES for path in files)
+    assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in files)
+
+
+def test_audit_caps_a_single_attacker_controlled_record(profile_home, monkeypatch):
+    monkeypatch.setattr(audit, "MAX_LOG_BYTES", 220)
+    audit_log(AuditEvent.LOGIN_FAILURE, reason="attacker" * 10_000)
+
+    path = profile_home / "logs" / "dashboard-auth.log"
+    assert path.stat().st_size <= audit.MAX_LOG_BYTES
+    assert json.loads(path.read_text())["truncated"] is True
+
+
+def test_audit_disk_pressure_never_breaks_auth_and_throttles_warning(
+    profile_home, monkeypatch, caplog
+):
+    def disk_full(*_args, **_kwargs):
+        raise OSError(errno.ENOSPC, "disk full")
+
+    monkeypatch.setattr(audit.os, "write", disk_full)
+    monkeypatch.setattr(audit, "_last_write_warning_at", 0.0)
+    caplog.set_level("WARNING")
+
+    audit_log(AuditEvent.LOGIN_FAILURE, reason="first")
+    audit_log(AuditEvent.LOGIN_FAILURE, reason="second")
+
+    warnings = [r for r in caplog.records if "audit log write failed" in r.message]
+    assert len(warnings) == 1
+
+
+def test_audit_recursively_redacts_case_insensitive_secret_fields(profile_home):
+    audit_log(
+        AuditEvent.LOGIN_FAILURE,
+        ID_TOKEN="header.payload.signature",
+        details={
+            "client_secret": "client-secret-value",
+            "nested": {
+                "Password": "password-value",
+                "accessToken": "camel-token-value",
+                "refresh-token": "hyphen-token-value",
+                "clientSecret": "camel-secret-value",
+                "reason": "denied",
+            },
+        },
+    )
+
+    raw = (profile_home / "logs" / "dashboard-auth.log").read_text()
+    for forbidden in (
+        "header.payload.signature",
+        "client-secret-value",
+        "password-value",
+        "camel-token-value",
+        "hyphen-token-value",
+        "camel-secret-value",
+    ):
+        assert forbidden not in raw
+    assert json.loads(raw)["details"]["nested"]["reason"] == "denied"
 
 

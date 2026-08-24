@@ -36,6 +36,7 @@ PUBLIC_API_PATHS: frozenset[str] = frozenset({
     # host-local detail so readiness checks cannot spend their budget inside
     # cold plugin imports.
     "/api/health",
+    "/api/ready",
     # Liveness probe target. Anonymous callers receive only ``ok`` and the
     # boolean auth-gate state. Authenticated callers receive the operator
     # inventory assembled by the endpoint. Documented as the portal's wildcard
