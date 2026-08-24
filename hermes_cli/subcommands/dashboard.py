@@ -85,7 +85,11 @@ def _add_server_runtime_args(parser) -> None:
 
 
 def build_dashboard_parser(
-    subparsers, *, cmd_dashboard: Callable, cmd_dashboard_register: Callable
+    subparsers,
+    *,
+    cmd_dashboard: Callable,
+    cmd_dashboard_register: Callable,
+    cmd_dashboard_sso_check: Callable | None = None,
 ) -> None:
     """Attach the ``dashboard`` and ``serve`` subcommands.
 
@@ -212,3 +216,25 @@ def build_dashboard_parser(
         ),
     )
     dashboard_register_parser.set_defaults(func=cmd_dashboard_register)
+
+    dashboard_sso_parser = dashboard_subparsers.add_parser(
+        "sso",
+        help="Validate enterprise self-hosted OIDC configuration",
+        description="Read-only enterprise dashboard SSO diagnostics",
+    )
+    sso_subparsers = dashboard_sso_parser.add_subparsers(
+        dest="dashboard_sso_subcommand", required=True
+    )
+    dashboard_sso_check_parser = sso_subparsers.add_parser(
+        "check",
+        help="Check discovery, endpoints, algorithms, callback, and policy syntax",
+    )
+    dashboard_sso_check_parser.add_argument(
+        "--json", action="store_true", help="Print a machine-readable JSON result"
+    )
+    dashboard_sso_check_parser.add_argument(
+        "--public-url",
+        default=None,
+        help="Override the dashboard public URL used to construct the callback",
+    )
+    dashboard_sso_check_parser.set_defaults(func=cmd_dashboard_sso_check)
