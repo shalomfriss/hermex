@@ -18,7 +18,7 @@ The dashboard is a machine-level administrative surface. An admitted SSO user is
 Hermes enforces the following boundaries:
 
 - Discovery issuer, ID-token issuer, and configured issuer must match.
-- Authorization, token, JWKS, and revocation endpoints must use HTTPS. Plain HTTP is allowed only for explicit loopback development issuers.
+- Authorization, token, JWKS, and revocation endpoints must be absolute, credential-free URLs and use HTTPS. Plain HTTP is allowed only for explicit loopback development issuers. Revocation requests never follow redirects and use the same bounded timeout as token requests.
 - ID tokens must use an allowed asymmetric algorithm advertised by discovery. HMAC algorithms and `alg=none` are rejected.
 - Audience is pinned to the configured client ID. A token with multiple audiences must also carry a matching `azp` claim.
 - Login uses state, S256 PKCE, and a cryptographically random nonce.
@@ -310,7 +310,7 @@ Publish the new key in JWKS before issuing tokens with it. Keep the old key publ
 
 ### Session and propagation lifetime
 
-Hermes honors IdP token expiration. Admission policy is evaluated from the signed ID token on login, normal verification, and refresh. A group or role removal therefore takes effect no later than the current ID-token lifetime, and often at the next refresh. Choose short enough ID-token lifetimes for your offboarding objective without creating excessive IdP traffic.
+Hermes honors IdP token expiration. Admission policy is evaluated from the signed ID token on login, normal verification, and refresh. OIDC permits a successful refresh response to omit a new `id_token`; in that case Hermes may retain the prior ID token only after re-verifying its signature, expiry, and current admission policy. The rotated refresh token is still persisted. If the prior ID token is absent or expired, Hermes returns a controlled session-expired response and requires a fresh login rather than treating the omission as an IdP outage or silently extending identity. A group or role removal therefore takes effect no later than the current ID-token lifetime, and often at the next refresh that returns a new ID token. Choose short enough ID-token lifetimes for your offboarding objective without creating excessive IdP traffic.
 
 ### Audit log
 
@@ -338,6 +338,8 @@ Prepare and test recovery before enforcing group or role policy:
 - `claim_malformed`: a configured group/role claim is not a string or list of strings, a path traverses a non-object, or a policy value has the wrong shape.
 - MFA users receive `mfa_required`: verify what the IdP actually emits in `amr`; use an explicit `allowed_acr_values` mapping when available.
 - Group removals are not immediate: shorten the IdP ID-token lifetime or force token/session revocation. Hermes cannot observe directory changes not represented in a newly signed token.
+- Refresh succeeds but no new `id_token` is returned: this is conforming OIDC behavior. Hermes reuses a still-valid, re-verified prior ID token; if none is available or it has expired, the client must complete a fresh sign-in. Do not classify this alone as a provider outage.
+- Unsafe `revocation_endpoint`: remove URL credentials, fragments, malformed hosts/ports, or plaintext non-loopback transport from IdP discovery. Hermes skips revocation rather than sending a refresh token or client credential to an unsafe URL; local cookies/tokens are still cleared on logout.
 - Provider outage returns 503: restore discovery/JWKS/token endpoint reachability. Do not clear cookies or weaken verification as a workaround.
 
 ## Rollback

@@ -143,7 +143,10 @@ class DashboardAuthProvider(ABC):
          access token in the cookie. Returns ``None`` if the token is
          expired or invalid (middleware then triggers refresh or logout).
       5. ``refresh_session`` — called when the access token is near expiry.
-         Returns a new Session with rotated tokens.
+         Returns a new Session with rotated tokens. ``access_token`` carries
+         the prior identity token when one is still available; providers may
+         re-verify and retain it when a conforming refresh response omits a new
+         identity token.
       6. ``revoke_session`` — called on /auth/logout. Best-effort.
 
     Failure semantics:
@@ -234,7 +237,9 @@ class DashboardAuthProvider(ABC):
     def verify_session(self, *, access_token: str) -> Optional[Session]: ...
 
     @abstractmethod
-    def refresh_session(self, *, refresh_token: str) -> Session: ...
+    def refresh_session(
+        self, *, refresh_token: str, access_token: str = ""
+    ) -> Session: ...
 
     @abstractmethod
     def revoke_session(self, *, refresh_token: str) -> None: ...
