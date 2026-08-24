@@ -26,10 +26,11 @@ export function redirectDashboardToLogin(loginUrl?: string): void {
   );
 }
 
-function noteDashboardAuthDenial(_code: number): void {
+function noteDashboardAuthDenial(code: number): void {
   // Surface-specific callers render the denial (PTY banner, events banner,
   // console line). This callback seam keeps the classification testable and
   // lets embedders add their own notice without turning denial into a reload.
+  void code;
 }
 
 function dashboardSessionStorage(): StorageLike | null {
