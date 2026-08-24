@@ -99,6 +99,12 @@ jobs:
     if: needs.detect.outputs.frontend == 'true'
     uses: ./.github/workflows/js-tests.yml
 
+  dashboard-browser-e2e:
+    name: Dashboard browser acceptance
+    needs: detect
+    if: needs.detect.outputs.frontend == 'true'
+    uses: ./.github/workflows/dashboard-browser-e2e.yml
+
   installer-tests:
     name: Installer tests
     needs: detect
@@ -221,6 +227,7 @@ jobs:
       - tests-os
       - lint
       - js-tests
+      - dashboard-browser-e2e
       - installer-tests
       - rust-tests
       - e2e-desktop
