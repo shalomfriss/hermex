@@ -654,13 +654,13 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         try:
             algorithm = str(jwt.get_unverified_header(id_token).get("alg") or "")
         except jwt.InvalidTokenError as exc:
-            raise ProviderError(f"ID token header is invalid: {exc}") from exc
+            raise InvalidCodeError(f"ID token header is invalid: {exc}") from exc
         advertised = disco.get("id_token_signing_alg_values_supported")
         allowed = set(_ALLOWED_ID_TOKEN_ALGS)
         if isinstance(advertised, list) and advertised:
             allowed.intersection_update(str(value) for value in advertised)
         if algorithm not in allowed:
-            raise ProviderError(
+            raise InvalidCodeError(
                 f"ID token signing algorithm {algorithm!r} is not allowed"
             )
 
@@ -706,7 +706,7 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
                 )
             except Exception:
                 pass
-            raise ProviderError(
+            raise InvalidCodeError(
                 f"ID token verification failed: {exc}{details}"
             ) from exc
 

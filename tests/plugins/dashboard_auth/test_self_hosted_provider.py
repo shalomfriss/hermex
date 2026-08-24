@@ -665,8 +665,7 @@ class TestVerifySession:
 
     def test_wrong_audience_raises(self, provider, rsa_keypair):
         token = _mint_id_token(rsa_keypair, aud="some-other-client")
-        with pytest.raises(ProviderError, match="verification failed"):
-            provider.verify_session(access_token=token)
+        assert provider.verify_session(access_token=token) is None
 
     def test_multi_audience_requires_matching_authorized_party(
         self, provider, rsa_keypair
@@ -706,8 +705,7 @@ class TestVerifySession:
         token = _mint_id_token(rsa_keypair)
         provider._discovery["id_token_signing_alg_values_supported"] = ["ES256"]
 
-        with pytest.raises(ProviderError, match="signing algorithm"):
-            provider.verify_session(access_token=token)
+        assert provider.verify_session(access_token=token) is None
 
     def test_missing_discovery_algorithm_list_uses_local_allowlist(
         self, provider, rsa_keypair
@@ -720,8 +718,8 @@ class TestVerifySession:
 
     def test_failure_message_surfaces_claims(self, provider, rsa_keypair):
         token = _mint_id_token(rsa_keypair, iss="https://evil.example")
-        with pytest.raises(ProviderError) as excinfo:
-            provider.verify_session(access_token=token)
+        with pytest.raises(InvalidCodeError) as excinfo:
+            provider._verify_id_token(token)
         msg = str(excinfo.value)
         assert "'https://evil.example'" in msg
         assert f"'{_ISSUER}'" in msg

@@ -741,6 +741,7 @@ const sidebars: SidebarsConfig = {
         'guides/azure-foundry',
         'guides/xai-grok-oauth',
         'guides/oauth-over-ssh',
+        'guides/enterprise-dashboard-sso',
         'guides/microsoft-graph-app-registration',
         'guides/operate-teams-meeting-pipeline',
       ],
