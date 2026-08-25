@@ -521,7 +521,7 @@ def _docs_html_response(response: HTMLResponse) -> HTMLResponse:
 @app.get("/docs", include_in_schema=False)
 async def dashboard_api_docs(request: Request):
     """Render Swagger UI entirely from the dashboard's own origin."""
-    prefix = _normalise_prefix(request.headers.get("x-forwarded-prefix"))
+    prefix = _prefix_from_request(request)
     oauth2_redirect_url = (
         f"{prefix}{app.swagger_ui_oauth2_redirect_url}"
         if app.swagger_ui_oauth2_redirect_url
