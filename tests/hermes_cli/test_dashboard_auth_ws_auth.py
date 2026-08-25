@@ -21,6 +21,8 @@ from fastapi.testclient import TestClient
 
 from hermes_cli import web_server
 from hermes_cli.dashboard_auth import clear_providers, register_provider
+from hermes_cli.dashboard_auth import routes as auth_routes
+from hermes_cli.dashboard_auth import ws_tickets
 from hermes_cli.dashboard_auth.ws_tickets import (
     _reset_for_tests,
     consume_internal_credential,
@@ -127,6 +129,46 @@ class TestWsTicketEndpoint:
         # returns either 401 or 302. Either is fine.
         assert r.status_code in (302, 401)
 
+    def test_burst_limit_returns_safe_429_without_ticket_material(
+        self, gated_app, monkeypatch
+    ):
+        _logged_in(gated_app)
+        monkeypatch.setattr(ws_tickets, "MAX_ISSUES_PER_PRINCIPAL", 1)
+        assert gated_app.post("/api/auth/ws-ticket").status_code == 200
+
+        limited = gated_app.post("/api/auth/ws-ticket")
+
+        assert limited.status_code == 429
+        assert limited.headers["retry-after"] == str(
+            ws_tickets.ISSUANCE_WINDOW_SECONDS
+        )
+        assert "ticket" not in limited.text.casefold()
+
+    def test_global_capacity_returns_safe_retryable_503(
+        self, gated_app, monkeypatch
+    ):
+        _logged_in(gated_app)
+        monkeypatch.setattr(ws_tickets, "MAX_ACTIVE_TICKETS", 1)
+        assert gated_app.post("/api/auth/ws-ticket").status_code == 200
+
+        saturated = gated_app.post("/api/auth/ws-ticket")
+
+        assert saturated.status_code == 503
+        assert saturated.headers["retry-after"] == str(ws_tickets.TTL_SECONDS)
+        assert "ticket" not in saturated.text.casefold()
+
+    def test_endpoint_uses_canonical_client_ip_bucket(
+        self, gated_app, monkeypatch
+    ):
+        _logged_in(gated_app)
+        addresses = iter(("192.0.2.1", "192.0.2.2", "192.0.2.1"))
+        monkeypatch.setattr(auth_routes, "_client_ip", lambda _request: next(addresses))
+        monkeypatch.setattr(ws_tickets, "MAX_ISSUES_PER_IP", 1)
+
+        assert gated_app.post("/api/auth/ws-ticket").status_code == 200
+        assert gated_app.post("/api/auth/ws-ticket").status_code == 200
+        assert gated_app.post("/api/auth/ws-ticket").status_code == 429
+
 
     def test_get_method_is_not_allowed(self, gated_app):
         _logged_in(gated_app)
@@ -219,6 +261,19 @@ class TestWsAuthOkGated:
         assert web_server._ws_auth_ok(ws_one) is True
         # Single-use — second consumption fails.
         assert web_server._ws_auth_ok(ws_two) is False
+
+    @pytest.mark.parametrize(
+        "path", ("/api/pty", "/api/console", "/api/ws", "/api/pub", "/api/events")
+    )
+    def test_all_public_websocket_surfaces_share_ticket_auth(self, gated_app, path):
+        ticket = mint_ticket(user_id="surface-user", provider="stub")
+        ws = _fake_ws(query={"ticket": ticket}, path=path)
+
+        assert web_server._ws_auth_ok(ws) is True
+        assert ws._hermes_auth_identity == {
+            "user_id": "surface-user",
+            "provider": "stub",
+        }
 
     def test_ticket_subprotocol_is_single_use_and_selects_only_the_public_protocol(self, gated_app):
         ticket = mint_ticket(user_id="subprotocol-user", provider="stub")
