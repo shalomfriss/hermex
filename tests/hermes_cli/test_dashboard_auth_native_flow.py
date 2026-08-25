@@ -469,6 +469,7 @@ def test_native_logout_revokes_only_the_bearer_bound_identity(gated_client):
         headers={"Authorization": f"Bearer {tokens['access_token']}"},
         json={
             "refresh_token": tokens["refresh_token"],
+            "refresh_binding": tokens["refresh_binding"],
             "provider": tokens["provider"],
             "user_id": "another-user",
         },
@@ -480,7 +481,10 @@ def test_native_logout_revokes_only_the_bearer_bound_identity(gated_client):
         headers={"Authorization": f"Bearer {tokens['access_token']}"},
         json={
             "refresh_token": tokens["refresh_token"],
-            "provider": tokens["provider"],
+            "refresh_binding": tokens["refresh_binding"],
+            # Mutable compatibility metadata cannot redirect the credential;
+            # the integrity binding remains the exclusive owner authority.
+            "provider": "nonowner",
             "user_id": tokens["user_id"],
         },
     )
@@ -492,12 +496,12 @@ def test_native_logout_revokes_only_the_bearer_bound_identity(gated_client):
         headers={"Authorization": f"Bearer {tokens['access_token']}"},
         json={
             "refresh_token": "already-revoked",
+            "refresh_binding": tokens["refresh_binding"],
             "provider": tokens["provider"],
             "user_id": tokens["user_id"],
         },
     )
-    assert already_dead.status_code == 200
-    assert already_dead.json() == {"ok": True, "revoked": True}
+    assert already_dead.status_code == 403
 
 
 def test_native_logout_idp_outage_is_idempotent_and_does_not_fail_local_logout(
@@ -528,10 +532,40 @@ def test_native_logout_idp_outage_is_idempotent_and_does_not_fail_local_logout(
         headers={"Authorization": f"Bearer {tokens['access_token']}"},
         json={
             "refresh_token": tokens["refresh_token"],
+            "refresh_binding": tokens["refresh_binding"],
             "provider": tokens["provider"],
             "user_id": tokens["user_id"],
         },
     )
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "revoked": False}
+
+
+def test_native_logout_reports_explicit_remote_revocation_failure(
+    gated_client, monkeypatch
+):
+    from hermes_cli.dashboard_auth import get_provider
+
+    tokens = _native_tokens(gated_client)
+    provider = get_provider(tokens["provider"])
+    assert provider is not None
+    monkeypatch.setattr(
+        provider,
+        "revoke_session",
+        lambda *, refresh_token: False,
+    )
+
+    response = gated_client.post(
+        "/api/auth/native/revoke",
+        headers={"Authorization": f"Bearer {tokens['access_token']}"},
+        json={
+            "refresh_token": tokens["refresh_token"],
+            "refresh_binding": tokens["refresh_binding"],
+            "provider": tokens["provider"],
+            "user_id": tokens["user_id"],
+        },
+    )
+
     assert response.status_code == 200
     assert response.json() == {"ok": True, "revoked": False}
 

@@ -291,7 +291,7 @@ Before production:
 1. Run preflight and retain only its redacted JSON output.
 2. Sign in as one admitted user in a private staging deployment.
 3. Confirm `/api/auth/me`, normal dashboard API calls, PTY/WebSocket connectivity, and logout.
-4. Connect Hermes Desktop to the same remote URL. Confirm system-browser sign-in, reconnect, and logout/re-auth.
+4. Connect Hermes Desktop to the same remote URL. Confirm system-browser sign-in and encrypted-token restart recovery. Shorten the test ID-token lifetime, then prove one native refresh rotates the access token, refresh token, and `refresh_binding`; replay the old refresh generation and confirm terminal 401; issue concurrent near-expiry calls and confirm the IdP sees one exchange; finally revoke and record the gateway's truthful `revoked` result before re-authentication.
 5. Sign in as a user outside the required group/tenant. Confirm a generic 403 and no re-login loop.
 6. Remove the admitted user from the required group. Confirm access becomes 403 after ID-token refresh or expiry; this is the upper bound for group-removal propagation.
 7. Stop or firewall the IdP. Confirm Hermes returns 503 for sessions it cannot verify instead of clearing them.

@@ -972,18 +972,42 @@ class TestRefreshAndRevoke:
         )
 
         with patch("plugins.dashboard_auth.self_hosted.httpx.post") as mock_post:
-            provider.revoke_session(refresh_token="refresh-secret")
+            revoked = provider.revoke_session(refresh_token="refresh-secret")
 
         mock_post.assert_not_called()
+        assert revoked is False
 
     def test_revoke_uses_bounded_non_redirecting_request(self, provider):
-        with patch("plugins.dashboard_auth.self_hosted.httpx.post") as mock_post:
-            provider.revoke_session(refresh_token="refresh-secret")
+        response = MagicMock(status_code=200)
+        with patch(
+            "plugins.dashboard_auth.self_hosted.httpx.post",
+            return_value=response,
+        ) as mock_post:
+            revoked = provider.revoke_session(refresh_token="refresh-secret")
 
         mock_post.assert_called_once()
         kwargs = mock_post.call_args.kwargs
         assert kwargs["timeout"] == oidc_plugin._TOKEN_ENDPOINT_TIMEOUT_SEC
         assert kwargs["follow_redirects"] is False
+        assert revoked is True
+
+    def test_revoke_http_failure_reports_false(self, provider):
+        response = MagicMock(status_code=503)
+
+        with patch(
+            "plugins.dashboard_auth.self_hosted.httpx.post",
+            return_value=response,
+        ):
+            assert provider.revoke_session(refresh_token="refresh-secret") is False
+
+    def test_revoke_transport_failure_reports_false(self, provider):
+        request = httpx.Request("POST", _DISCOVERY_DOC["revocation_endpoint"])
+
+        with patch(
+            "plugins.dashboard_auth.self_hosted.httpx.post",
+            side_effect=httpx.ConnectTimeout("timed out", request=request),
+        ):
+            assert provider.revoke_session(refresh_token="refresh-secret") is False
 
 
 # ---------------------------------------------------------------------------

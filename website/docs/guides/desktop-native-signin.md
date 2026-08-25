@@ -52,7 +52,7 @@ Desktop app                Gateway (/auth/native/*)          Nous Portal (IDP)
    │                        3. mint one-time gateway code
    │ ◄─ 302 127.0.0.1/cb?code=… ─┘
    │ 4. POST /auth/native/token (code + PKCE verifier)
-   │ ◄─ 5. { access_token, refresh_token, expires_at } ───────┘
+   │ ◄─ 5. { access_token, refresh_token, refresh_binding, expires_at }
    │ 6. store in OS keychain; use Bearer for REST + WS tickets
 ```
 
@@ -88,14 +88,25 @@ cookie session after a failed native attempt.
 - **Access token**: short-lived (minutes). Sent as `Authorization: Bearer` on
   every REST call and when minting a WebSocket ticket.
 - **Refresh token**: longer-lived, rotating. When the access token is near
-  expiry the app calls `/auth/native/refresh` to rotate both tokens, then
-  updates the keychain.
+  expiry the app calls `/auth/native/refresh` with the prior signed access
+  token and the gateway-minted `refresh_binding`. The gateway verifies the
+  prior identity, binds the refresh token to exactly one provider, re-runs the
+  current admission policy, and rotates the access token, refresh token, and
+  binding together. Concurrent callers for the same gateway and token
+  generation share one exchange, so a rotating refresh token is never replayed
+  by the app.
+- **Upgrade compatibility**: token sets stored by an older Desktop release do
+  not contain `refresh_binding`. They fail closed locally and require one fresh
+  native sign-in; the app never sends an unbound refresh token or loops on a
+  gateway schema error.
 - **Terminal expiry**: if the refresh token is dead (expired / revoked /
   reuse-detected), the app clears its stored tokens and prompts a fresh native
   sign-in. It does not switch to a cookie identity.
-- **Sign out**: asks the gateway to revoke the IdP refresh token through an
-  access-token-bound identity check, then clears native keychain state and any
-  legacy cookie even when remote revocation is already complete or unavailable.
+- **Sign out**: refreshes an expired access token when possible, then asks the
+  gateway to revoke the owner-bound IdP refresh token. The app reports the
+  gateway's actual `revoked` result and always clears native keychain state and
+  any legacy cookie, even when remote revocation is already complete or
+  unavailable.
 - **Remote file uploads**: supported with native bearer authentication. They
   are explicitly disabled in legacy cookie-only compatibility mode; upgrade
   the gateway rather than weakening the upload credential boundary.

@@ -53,6 +53,7 @@ from hermes_cli.dashboard_auth.cookies import (
 from hermes_cli.dashboard_auth.client_ip import client_ip
 from hermes_cli.dashboard_auth.login_page import render_login_html
 from hermes_cli.dashboard_auth.middleware import (
+    _extract_bearer,
     _attempt_refresh,
     access_denied_response,
     provider_outage_response,
@@ -1075,6 +1076,7 @@ async def api_auth_ws_ticket(request: Request):
 
 class _NativeRevokeBody(BaseModel):
     refresh_token: str
+    refresh_binding: str
     provider: str
     user_id: str
 
@@ -1085,18 +1087,34 @@ async def api_auth_native_revoke(request: Request, body: _NativeRevokeBody):
     sess = getattr(request.state, "session", None)
     if sess is None:
         raise HTTPException(status_code=401, detail="Unauthorized")
-    if body.user_id != sess.user_id or body.provider != sess.provider:
+    if body.user_id != sess.user_id:
         raise HTTPException(status_code=403, detail="Native logout identity mismatch")
 
-    provider = get_provider(body.provider)
+    owner = resolve_refresh_owner(
+        binding=body.refresh_binding,
+        refresh_token=body.refresh_token,
+    )
+    if owner != sess.provider:
+        raise HTTPException(status_code=403, detail="Native logout identity mismatch")
+    provider = get_provider(owner)
     if provider is None:
         raise HTTPException(status_code=403, detail="Native logout identity mismatch")
+    bearer = _extract_bearer(request)
+    if not bearer:
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
     try:
-        refreshed = provider.refresh_session(refresh_token=body.refresh_token)
-    except RefreshExpiredError:
-        # Idempotent logout: an already-dead token has the requested state.
-        refreshed = None
+        refresh_result = _attempt_refresh(
+            request,
+            refresh_token=body.refresh_token,
+            access_token=bearer,
+            refresh_owner=owner,
+        )
+        refreshed = refresh_result[0] if refresh_result is not None else None
+    except AccessDeniedError:
+        raise HTTPException(status_code=403, detail="Native logout identity mismatch")
+    except ProviderError:
+        return {"ok": True, "revoked": False}
     except Exception as e:  # noqa: BLE001 — outage must not block local logout
         _log.warning(
             "dashboard-auth: native revoke validation on %r failed: %s",
@@ -1113,9 +1131,11 @@ async def api_auth_native_revoke(request: Request, body: _NativeRevokeBody):
     revoked = True
     try:
         if refreshed is not None:
-            provider.revoke_session(
+            revoke_result = provider.revoke_session(
                 refresh_token=refreshed.refresh_token or body.refresh_token
             )
+            if revoke_result is False:
+                revoked = False
     except Exception as e:  # noqa: BLE001 — best-effort/idempotent logout
         revoked = False
         _log.warning(
@@ -1196,6 +1216,9 @@ async def auth_native_token(request: Request, body: _NativeTokenBody):
 
 
 class _NativeRefreshBody(BaseModel):
+    # Older clients omit this and receive a controlled 401 from providers that
+    # require prior signed identity, rather than a schema-level 422 loop.
+    access_token: str = ""
     refresh_token: str
     refresh_binding: str
     # Retained for wire compatibility and display only. Ownership is resolved
@@ -1229,7 +1252,7 @@ async def auth_native_refresh(request: Request, body: _NativeRefreshBody):
         refreshed = _attempt_refresh(
             request,
             refresh_token=body.refresh_token,
-            access_token="",
+            access_token=body.access_token,
             refresh_owner=owner,
         )
     except AccessDeniedError as e:

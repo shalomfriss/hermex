@@ -42,6 +42,7 @@ export interface NativePkcePair {
 export interface NativeTokenSet {
   accessToken: string
   refreshToken: string
+  refreshBinding: string
   expiresAt: number
   provider: string
   userId: string
@@ -203,6 +204,7 @@ export function parseTokenResponse(body: any): NativeTokenSet {
   return {
     accessToken,
     refreshToken: String(body?.refresh_token || ''),
+    refreshBinding: String(body?.refresh_binding || ''),
     expiresAt: Number.isFinite(expiresAt) ? expiresAt : 0,
     provider: String(body?.provider || ''),
     userId: String(body?.user_id || '')
@@ -228,6 +230,7 @@ export function parseStoredTokenSet(body: any): NativeTokenSet {
   return {
     accessToken,
     refreshToken: String(body?.refreshToken || ''),
+    refreshBinding: String(body?.refreshBinding || ''),
     expiresAt: Number.isFinite(expiresAt) ? expiresAt : 0,
     provider: String(body?.provider || ''),
     userId: String(body?.userId || '')
