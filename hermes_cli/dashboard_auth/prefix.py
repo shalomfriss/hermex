@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import urllib.parse
 from typing import Optional
 
@@ -30,19 +31,21 @@ _log = logging.getLogger(__name__)
 # deployments add their own sub-path. Keep a bounded header budget, but leave
 # room for mainstream reverse-proxy path mounts.
 _MAX_PREFIX_LENGTH = 256
+_SAFE_PREFIX_SEGMENT = re.compile(r"^[A-Za-z0-9._~-]+$")
 
 # Characters that, if present in a public_url or prefix value, indicate
 # either a typo or a header-injection attempt. Reject the whole value
 # rather than try to sanitise — the operator can fix their config.
 _REJECT_CHARS = frozenset(('"', "'", "<", ">", " ", "\n", "\r", "\t"))
 
-# Remember which (source, value) pairs we've already warned about.
+# Remember which malformed public URL values and prefix rejection reasons have
+# already produced warnings.
 # ``resolve_public_url`` runs on every authenticated request, so an
 # un-deduplicated warning would flood the logs once per request for a
-# misconfigured deploy. Keyed on the raw value too, so changing the
-# config and reloading surfaces a fresh warning.
+# misconfigured deploy. Prefix warnings intentionally do not retain or reflect
+# attacker-controlled values.
 _warned_malformed_public_urls: set = set()
-_warned_malformed_prefixes: set = set()
+_warned_malformed_prefixes: set[str] = set()
 
 
 def _warn_if_malformed(source: str, raw: str) -> None:
@@ -83,14 +86,12 @@ def _warn_if_malformed_prefix(raw: Optional[str], reason: str) -> None:
     cleaned = raw.strip() if raw else ""
     if not cleaned:
         return
-    key = (cleaned, reason)
-    if key in _warned_malformed_prefixes:
+    if reason in _warned_malformed_prefixes:
         return
-    _warned_malformed_prefixes.add(key)
+    _warned_malformed_prefixes.add(reason)
     _log.warning(
-        "X-Forwarded-Prefix header %r was ignored because %s. "
+        "X-Forwarded-Prefix header was ignored because %s. "
         "Dashboard URLs will be generated without a reverse-proxy path prefix.",
-        cleaned,
         reason,
     )
 
@@ -100,42 +101,62 @@ def normalise_prefix(raw: Optional[str]) -> str:
 
     Returns a string like ``"/hermes"`` (no trailing slash) or ``""``
     when no prefix is set / the header is malformed. We deliberately
-    reject anything containing ``..`` or non-printable bytes so a
-    hostile proxy can't inject HTML or path-traversal sequences via the
-    prefix.
+    accept only an absolute ASCII path made from unreserved URL characters.
+    Percent encoding, empty or dot segments, delimiters, and backslashes are
+    rejected rather than decoded or repaired, so every accepted value has one
+    byte-exact path interpretation at the proxy, browser, and application.
     """
     if not raw:
+        return ""
+    if len(raw.encode("utf-8", errors="replace")) > _MAX_PREFIX_LENGTH:
+        _warn_if_malformed_prefix(
+            raw,
+            f"it is longer than {_MAX_PREFIX_LENGTH} bytes",
+        )
         return ""
     p = raw.strip()
     if not p:
         return ""
     if not p.startswith("/"):
-        p = "/" + p
+        _warn_if_malformed_prefix(raw, "it is not an absolute path")
+        return ""
     p = p.rstrip("/")
+    if not p:
+        return ""
+    segments = p[1:].split("/")
     if (
-        "//" in p
-        or ".." in p
-        or any(c in p for c in _REJECT_CHARS)
+        not p.isascii()
+        or any(not segment or segment in {".", ".."} for segment in segments)
+        or any(
+            _SAFE_PREFIX_SEGMENT.fullmatch(segment) is None for segment in segments
+        )
     ):
         _warn_if_malformed_prefix(
             raw,
             "it contains a disallowed character or path sequence",
         )
         return ""
-    if len(p) > _MAX_PREFIX_LENGTH:
-        _warn_if_malformed_prefix(
-            raw,
-            f"it is longer than {_MAX_PREFIX_LENGTH} characters",
-        )
-        return ""
     return p
 
 
 def prefix_from_request(request) -> str:
-    """Convenience wrapper that reads the header off a Starlette/FastAPI
-    Request and normalises it. Returns ``""`` when no prefix.
+    """Return one trusted, unambiguous forwarded prefix or ``""``.
+
+    The header is authoritative only when the immediate socket peer belongs to
+    ``dashboard.trusted_proxies``. Multiple field lines and comma-joined values
+    are rejected rather than choosing a proxy-dependent first/last value.
     """
-    return normalise_prefix(request.headers.get("x-forwarded-prefix"))
+    from hermes_cli.dashboard_auth.client_ip import trusted_peer
+
+    if not trusted_peer(request):
+        return ""
+    values = request.headers.getlist("x-forwarded-prefix")
+    if not values:
+        return ""
+    if len(values) != 1:
+        _warn_if_malformed_prefix("multiple", "multiple header fields were supplied")
+        return ""
+    return normalise_prefix(values[0])
 
 
 # ---------------------------------------------------------------------------

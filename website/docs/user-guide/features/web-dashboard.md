@@ -963,7 +963,7 @@ engages the OAuth gate.
 
 ### Public URL override
 
-By default, the dashboard reconstructs the OAuth callback URL from the request — proxy-preserved host information plus `X-Forwarded-Proto` and `X-Forwarded-Prefix`. Client attribution and `X-Forwarded-Proto` are honored only when the immediate peer matches `dashboard.trusted_proxies`; loopback (`127.0.0.1` and `::1`) is trusted by default. This works out of the box for a reverse proxy on the same host that preserves the public host and sets the forwarding headers correctly.
+By default, the dashboard reconstructs the OAuth callback URL from the request — the proxy-preserved `Host` plus `X-Forwarded-Proto` and `X-Forwarded-Prefix`. Client attribution, forwarded scheme, and forwarded path prefix are honored only when the immediate peer matches `dashboard.trusted_proxies`; loopback (`127.0.0.1` and `::1`) is trusted by default. A direct caller cannot change redirect targets, cookie paths, SPA assets, API URLs, or WebSocket URLs by supplying forwarding headers. This works out of the box for a reverse proxy on the same host that replaces `Host` with the public host and sets the forwarding headers correctly.
 
 For deploys behind reverse proxies that don't reliably forward those headers (manual nginx setups, on-prem ingresses, custom-domain deploys with partial proxy chains), set `dashboard.public_url` (or `HERMES_DASHBOARD_PUBLIC_URL`) to the **complete public URL** the dashboard is reached at:
 
@@ -994,6 +994,8 @@ Authentication throttles, native-login pending capacity, bearer/session failures
 
 Resolution proceeds from right to left: trusted proxy hops are skipped and the first untrusted address is the client boundary. This supports one or multiple append-style proxies without trusting the attacker-controlled left edge. Every hop must be an IP literal; malformed chains, more than 32 hops, or more than 4096 bytes fail safely to the immediate peer. IPv4, IPv6, and IPv4-mapped IPv6 literals are canonicalized so textual variants cannot split rate-limit buckets.
 
+`X-Forwarded-Prefix` is a single-value header, not an append-style chain. Hermes accepts exactly one field line from a trusted immediate peer, up to 256 bytes, containing an absolute ASCII path made only from URL-unreserved characters. It removes trailing slashes, while rejecting duplicate/comma-joined values, percent encoding, backslashes, empty or dot segments, query/fragment delimiters, and non-ASCII input. Rejected or untrusted values fall back to root scope. In a multi-proxy deployment, normalize the external prefix once and pass that same single value through the trusted chain; do not append a prefix at each hop.
+
 ```yaml
 dashboard:
   # Safest default: only same-host reverse proxies.
@@ -1003,7 +1005,7 @@ dashboard:
   # trusted_proxies: ["10.20.0.0/16", "fd00:20::/64"]
 ```
 
-List only networks that can connect **directly** to Hermes. Each listed proxy must strip untrusted inbound forwarding headers or append the verified connection peer. Do not use broad ranges such as `0.0.0.0/0` or `::/0`: that makes every direct caller a trusted proxy and restores spoofable attribution. Set `trusted_proxies: []` when Hermes is directly exposed with no reverse proxy; forwarded headers and uvicorn proxy handling are then disabled.
+List only networks that can connect **directly** to Hermes. Each listed proxy must strip untrusted inbound `X-Forwarded-Prefix` and `X-Forwarded-Proto` values, and strip or safely append the verified connection peer to `X-Forwarded-For`. Do not use broad ranges such as `0.0.0.0/0` or `::/0`: that makes every direct caller a trusted proxy and restores spoofable attribution and prefix control. Set `trusted_proxies: []` when Hermes is directly exposed with no reverse proxy; forwarded headers and uvicorn proxy handling are then disabled.
 
 ### OAuth flow
 

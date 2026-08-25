@@ -244,7 +244,9 @@ If no public URL is configured, preflight can still validate discovery, but repo
 
 Terminate TLS before traffic reaches an internet-facing dashboard and preserve the exact external URL:
 
-- Forward the original scheme and host (`X-Forwarded-Proto`, `X-Forwarded-Host`) and any path prefix (`X-Forwarded-Prefix`).
+- Configure `dashboard.trusted_proxies` with only the networks that connect directly to Hermes. Forwarded scheme and path-prefix metadata is ignored from every other peer.
+- Strip inbound forwarding metadata at the trust boundary. Forward the original scheme and host (`X-Forwarded-Proto`, `X-Forwarded-Host`) and set one canonical `X-Forwarded-Prefix` value; never append or comma-join prefixes across hops.
+- Use an absolute ASCII prefix of at most 256 bytes with URL-unreserved path segments (for example `/hermes`). Encoded slashes, backslashes, duplicate fields, dot/empty segments, query/fragment delimiters, and non-ASCII values are rejected to root scope.
 - Set `dashboard.public_url` to the complete external URL when the proxy chain cannot preserve those values reliably.
 - Do not cache `/auth/*`, `/api/auth/*`, WebSocket upgrades, or responses that set cookies.
 - Preserve `Set-Cookie` attributes and paths. Do not rewrite secure cookies to plaintext HTTP.
@@ -254,6 +256,7 @@ Terminate TLS before traffic reaches an internet-facing dashboard and preserve t
 
 ```yaml
 dashboard:
+  trusted_proxies: ["127.0.0.1", "::1"]
   topology:
     replicas: 2
     state_backend: process_local
@@ -271,6 +274,7 @@ A minimal nginx location behind TLS resembles:
 ```nginx
 location / {
     proxy_pass http://127.0.0.1:9119;
+    proxy_set_header X-Forwarded-For $remote_addr;
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-Host $host;
     proxy_set_header X-Forwarded-Proto https;
@@ -282,7 +286,7 @@ location / {
 }
 ```
 
-Adjust the prefix and standard WebSocket map for your nginx layout.
+Adjust the prefix and standard WebSocket map for your nginx layout. The example replaces, rather than preserves, caller-supplied forwarding headers at the same-host trust boundary.
 
 ## 6. Stage and verify
 
