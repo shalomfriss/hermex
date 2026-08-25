@@ -1,7 +1,9 @@
 """Abstract base + dataclasses + exceptions for dashboard auth providers."""
 from __future__ import annotations
 
+import logging
 import re
+import secrets
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
@@ -70,11 +72,154 @@ class LoginStart:
     cookie_payload: dict[str, str]
 
 
+_SAFE_DIAGNOSTIC_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
+_REFERENCE_RE = re.compile(r"^AUTH-[A-F0-9]{8}$")
+_SAFE_PROVIDER_CLASSIFICATIONS = frozenset(
+    {
+        "backing_store_unreachable",
+        "endpoint_unreachable",
+        "provider_exception",
+        "provider_unavailable",
+        "upstream_http_error",
+        "upstream_http_1xx",
+        "upstream_http_2xx",
+        "upstream_http_3xx",
+        "upstream_http_4xx",
+        "upstream_http_5xx",
+    }
+)
+_SAFE_OAUTH_ERROR_CODES = frozenset(
+    {
+        "access_denied",
+        "invalid_client",
+        "invalid_grant",
+        "invalid_request",
+        "invalid_scope",
+        "login_required",
+        "server_error",
+        "temporarily_unavailable",
+        "unauthorized_client",
+        "unsupported_grant_type",
+        "unsupported_response_type",
+    }
+)
+
+
+def safe_oauth_error_code(value: object) -> str:
+    """Return an explicitly allowlisted OAuth error classification."""
+    return value if isinstance(value, str) and value in _SAFE_OAUTH_ERROR_CODES else "provider_error"
+
+
+def _safe_provider_classification(value: object) -> str:
+    return (
+        value
+        if isinstance(value, str) and value in _SAFE_PROVIDER_CLASSIFICATIONS
+        else "provider_unavailable"
+    )
+
+
 class ProviderError(Exception):
     """IDP unreachable, network error, or other transient failure.
 
-    Middleware translates this to HTTP 503.
+    Middleware translates this to HTTP 503. ``classification``, ``status_code``,
+    and ``reference_id`` are the only fields trusted at logging/HTTP boundaries;
+    the exception text is provider-owned and must never be emitted there.
     """
+
+    def __init__(
+        self,
+        message: str = "Auth provider unavailable",
+        *,
+        classification: str = "provider_unavailable",
+        status_code: int | None = None,
+        reference_id: str | None = None,
+    ) -> None:
+        self.classification = _safe_provider_classification(classification)
+        self.status_code = (
+            status_code
+            if isinstance(status_code, int) and 100 <= status_code <= 599
+            else None
+        )
+        self.reference_id = (
+            reference_id
+            if isinstance(reference_id, str) and _REFERENCE_RE.fullmatch(reference_id)
+            else f"AUTH-{secrets.token_hex(4).upper()}"
+        )
+        self.provider = ""
+        super().__init__(message)
+
+
+def upstream_provider_error(
+    *, service: str, operation: str, status_code: int
+) -> ProviderError:
+    """Build a bounded error without reading an untrusted response body."""
+    safe_service = service if _SAFE_DIAGNOSTIC_RE.fullmatch(service) else "oauth"
+    safe_operation = (
+        operation if _SAFE_DIAGNOSTIC_RE.fullmatch(operation) else "request"
+    )
+    safe_status = status_code if isinstance(status_code, int) else 0
+    classification = (
+        f"upstream_http_{safe_status // 100}xx"
+        if 100 <= safe_status <= 599
+        else "upstream_http_error"
+    )
+    error = ProviderError(
+        f"{safe_service} {safe_operation} returned HTTP {safe_status}",
+        classification=classification,
+        status_code=safe_status,
+    )
+    error.args = (f"{error.args[0]} (reference {error.reference_id})",)
+    return error
+
+
+def log_provider_failure(
+    logger: logging.Logger,
+    *,
+    provider: str,
+    operation: str,
+    error: BaseException,
+    level: int = logging.WARNING,
+) -> str:
+    """Log only allowlisted provider diagnostics and return the reference."""
+    safe_provider = (
+        provider if isinstance(provider, str) and _SAFE_DIAGNOSTIC_RE.fullmatch(provider)
+        else "unknown"
+    )
+    safe_operation = (
+        operation
+        if isinstance(operation, str) and _SAFE_DIAGNOSTIC_RE.fullmatch(operation)
+        else "request"
+    )
+    classification = getattr(error, "classification", "provider_exception")
+    classification = (
+        classification
+        if isinstance(classification, str)
+        and classification in _SAFE_PROVIDER_CLASSIFICATIONS
+        else "provider_exception"
+    )
+    reference_id = getattr(error, "reference_id", None)
+    if not isinstance(reference_id, str) or not _REFERENCE_RE.fullmatch(reference_id):
+        reference_id = f"AUTH-{secrets.token_hex(4).upper()}"
+        try:
+            setattr(error, "reference_id", reference_id)
+        except Exception:
+            pass
+    status_code = getattr(error, "status_code", None)
+    status_detail = (
+        f" HTTP {status_code}"
+        if isinstance(status_code, int) and 100 <= status_code <= 599
+        else ""
+    )
+    logger.log(
+        level,
+        "dashboard-auth: provider %r failed during %s (%s%s; reference %s)",
+        safe_provider,
+        safe_operation,
+        classification,
+        status_detail,
+        reference_id,
+    )
+    return reference_id
 
 
 _ACCESS_DENIED_REASON_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")

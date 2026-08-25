@@ -94,6 +94,9 @@ from hermes_cli.dashboard_auth import (
     ProviderError,
     RefreshExpiredError,
     Session,
+    log_provider_failure,
+    safe_oauth_error_code,
+    upstream_provider_error,
 )
 from .policy import OIDCAuthorizationPolicy
 
@@ -403,7 +406,13 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
                 follow_redirects=False,
             )
         except Exception as exc:  # noqa: BLE001 — best-effort
-            logger.debug("self-hosted OIDC: revoke failed (ignored): %s", exc)
+            log_provider_failure(
+                logger,
+                provider=self.name,
+                operation="revoke",
+                error=exc,
+                level=logging.DEBUG,
+            )
             return False
         return 200 <= response.status_code < 300
 
@@ -488,19 +497,21 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
             )
         except httpx.RequestError as exc:
             raise ProviderError(
-                f"OIDC token endpoint unreachable: {exc}"
+                "OIDC token endpoint unreachable",
+                classification="endpoint_unreachable",
             ) from exc
 
         if response.status_code == 400:
             body = self._parse_json_body(response)
-            error_code = body.get("error", "invalid_request")
+            error_code = safe_oauth_error_code(body.get("error"))
             raise bad_request_exc(
                 f"IDP rejected token request: {error_code}"
             )
         if response.status_code != 200:
-            raise ProviderError(
-                f"OIDC token endpoint returned {response.status_code}: "
-                f"{response.text[:200]!r}"
+            raise upstream_provider_error(
+                service="oidc",
+                operation="token_endpoint",
+                status_code=response.status_code,
             )
 
         payload = self._parse_json_body(response)

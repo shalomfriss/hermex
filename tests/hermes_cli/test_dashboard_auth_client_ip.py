@@ -230,7 +230,9 @@ def test_native_pending_capacity_uses_trusted_chain_canonical_ip(monkeypatch):
                         )
                     )
                 assert exc.value.status_code == 503
-                assert "too many pending" in exc.value.detail
+                assert exc.value.detail.startswith(
+                    "Native sign-in is temporarily unavailable. Reference: AUTH-"
+                )
 
         assert {event["ip"] for event in events} == {"203.0.113.44"}
     finally:

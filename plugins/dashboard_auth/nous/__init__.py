@@ -86,6 +86,8 @@ from hermes_cli.dashboard_auth import (
     ProviderError,
     RefreshExpiredError,
     Session,
+    safe_oauth_error_code,
+    upstream_provider_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -233,7 +235,10 @@ class NousDashboardAuthProvider(DashboardAuthProvider):
                 timeout=_TOKEN_ENDPOINT_TIMEOUT_SEC,
             )
         except httpx.RequestError as exc:
-            raise ProviderError(f"Portal token endpoint unreachable: {exc}") from exc
+            raise ProviderError(
+                "Portal token endpoint unreachable",
+                classification="endpoint_unreachable",
+            ) from exc
 
         # The dashboard auth-code grant now issues a rotating refresh token
         # (24h session, reuse-detected) — Portal NAS PR #293. A 400 here means
@@ -293,7 +298,8 @@ class NousDashboardAuthProvider(DashboardAuthProvider):
             )
         except httpx.RequestError as exc:
             raise ProviderError(
-                f"Portal token endpoint unreachable: {exc}"
+                "Portal token endpoint unreachable",
+                classification="endpoint_unreachable",
             ) from exc
 
         # A 400 on refresh means the RT is expired / revoked / reuse-detected;
@@ -321,12 +327,13 @@ class NousDashboardAuthProvider(DashboardAuthProvider):
             # (auth-code) and expired / revoked / reuse-detected (refresh) all
             # surface as 400 with an OAuth-shaped JSON error envelope.
             body = self._parse_json_body(response)
-            error_code = body.get("error", "invalid_request")
+            error_code = safe_oauth_error_code(body.get("error"))
             raise bad_request_exc(f"Portal rejected token request: {error_code}")
         if response.status_code != 200:
-            raise ProviderError(
-                f"Portal token endpoint returned {response.status_code}: "
-                f"{response.text[:200]!r}"
+            raise upstream_provider_error(
+                service="portal",
+                operation="token_endpoint",
+                status_code=response.status_code,
             )
 
         payload = self._parse_json_body(response)
