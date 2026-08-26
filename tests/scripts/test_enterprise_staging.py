@@ -111,6 +111,7 @@ def test_caddy_routes_idp_and_dashboard_with_external_forwarding(tmp_path: Path)
     assert "path /realms/* /resources/*" in text
     assert "reverse_proxy @keycloak 127.0.0.1:18081" in text
     assert "reverse_proxy 127.0.0.1:19138" in text
+    assert "header_up Host 127.0.0.1:19138" in text
     assert "X-Forwarded-Proto https" in text
     assert "X-Forwarded-Host hermes-test.example.test" in text
     assert "header_down -Server" in text

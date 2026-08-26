@@ -235,7 +235,7 @@ def build_caddyfile(cfg: DeploymentConfig) -> str:
     }}
 
     reverse_proxy 127.0.0.1:{cfg.dashboard_port} {{
-        header_up Host {host}
+        header_up Host 127.0.0.1:{cfg.dashboard_port}
         header_up X-Forwarded-Host {host}
         header_up X-Forwarded-Proto https
         header_up X-Forwarded-Port 443
