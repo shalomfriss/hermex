@@ -476,6 +476,31 @@ class TestWsHostOriginGuardOrigins:
         ws = self._ws(origin="https://evil.test", host="fly-app.fly.dev")
         assert web_server._ws_host_origin_is_allowed(ws) is False
 
+    def test_trusted_loopback_proxy_accepts_exact_configured_public_origin(
+        self, loopback_app, monkeypatch
+    ):
+        import ipaddress
+
+        from hermes_cli.dashboard_auth import prefix
+
+        web_server.app.state.auth_required = True
+        web_server.app.state.dashboard_trusted_proxy_networks = (
+            ipaddress.ip_network("127.0.0.1/32"),
+        )
+        monkeypatch.setattr(
+            prefix,
+            "resolve_public_url",
+            lambda: "https://dashboard.example.test",
+        )
+        allowed = self._ws(
+            origin="https://dashboard.example.test",
+            host="127.0.0.1:9119",
+        )
+        evil = self._ws(origin="https://evil.test", host="127.0.0.1:9119")
+
+        assert web_server._ws_host_origin_is_allowed(allowed) is True
+        assert web_server._ws_host_origin_is_allowed(evil) is False
+
 
 
 class TestSidecarUrl:

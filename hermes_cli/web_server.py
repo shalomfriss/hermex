@@ -16324,6 +16324,41 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
         return f"origin_mismatch origin={origin} bound={bound_host}"
 
     if not _is_accepted_host(parsed.netloc, bound_host):
+        # A loopback-bound dashboard can deliberately keep the OAuth gate on
+        # behind a trusted local reverse proxy (``--require-auth``).  The
+        # browser's Origin is then the configured public HTTPS URL while the
+        # upstream Host remains loopback for DNS-rebinding protection.  Accept
+        # that one exact origin only from a configured immediate proxy peer.
+        import ipaddress
+
+        from hermes_cli.dashboard_auth.prefix import resolve_public_url
+
+        peer = ws.client.host if ws.client else ""
+        try:
+            peer_ip = ipaddress.ip_address(peer)
+            if isinstance(peer_ip, ipaddress.IPv6Address) and peer_ip.ipv4_mapped:
+                peer_ip = peer_ip.ipv4_mapped
+        except ValueError:
+            peer_ip = None
+        networks = tuple(
+            getattr(app.state, "dashboard_trusted_proxy_networks", ()) or ()
+        )
+        trusted_peer = bool(
+            peer_ip
+            and any(
+                peer_ip.version == network.version and peer_ip in network
+                for network in networks
+            )
+        )
+        public = urllib.parse.urlparse(resolve_public_url() or "")
+        if (
+            getattr(app.state, "auth_required", False)
+            and trusted_peer
+            and parsed.scheme == "https"
+            and parsed.netloc == public.netloc
+            and public.scheme == "https"
+        ):
+            return None
         return f"origin_mismatch origin={origin} bound={bound_host}"
     return None
 
