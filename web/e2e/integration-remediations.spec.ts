@@ -90,6 +90,13 @@ test("self-hosted docs render without external resources or runtime failures", a
   await expect(permalink).toBeFocused();
   await permalink.press("Enter");
   await expect(docsPage).toHaveURL(new RegExp(`${permalinkHref!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`));
+  const permalinkLabels = await docsPage.locator(".hermes-swagger-permalink").evaluateAll((links) =>
+    links.map((link) => link.getAttribute("aria-label")),
+  );
+  expect(new Set(permalinkLabels).size).toBe(permalinkLabels.length);
+  await docsPage.evaluate(() => window.history.replaceState(null, "", window.location.pathname));
+  await permalink.click();
+  await expect(docsPage).toHaveURL(new RegExp(`${permalinkHref!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`));
   const results = await new AxeBuilder({ page: docsPage })
     .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
     .analyze();

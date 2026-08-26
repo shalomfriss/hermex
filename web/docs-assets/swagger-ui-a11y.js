@@ -16,9 +16,21 @@
       permalink.className = "hermes-swagger-permalink";
       permalink.href = href;
       permalink.textContent = "#";
-      const operationName = anchor.textContent?.trim() || "operation";
-      permalink.setAttribute("aria-label", `Permalink to ${operationName}`);
-      permalink.title = `Permalink to ${operationName}`;
+      const summary = anchor.closest(".opblock-summary");
+      const method = summary?.querySelector(".opblock-summary-method")?.textContent?.trim();
+      const path = anchor.textContent?.trim() || "operation";
+      const baseLabel = `Permalink to ${method ? `${method} ` : ""}${path}`;
+      const usedLabels = new Set(
+        Array.from(document.querySelectorAll(".hermes-swagger-permalink[aria-label]"), (link) =>
+          link.getAttribute("aria-label"),
+        ),
+      );
+      let label = baseLabel;
+      for (let duplicate = 2; usedLabels.has(label); duplicate += 1) {
+        label = `${baseLabel} (${duplicate})`;
+      }
+      permalink.setAttribute("aria-label", label);
+      permalink.title = label;
       anchor.replaceWith(replacement);
       replacement.closest(".opblock-summary-control")?.insertAdjacentElement("afterend", permalink);
     }
