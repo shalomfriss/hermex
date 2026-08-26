@@ -106,3 +106,4 @@ def test_docs_oauth_redirect_declares_language():
 
     assert response.status_code == 200
     assert '<html lang="en-US">' in response.text
+    assert "docs-assets/" not in response.text

@@ -512,21 +512,25 @@ _DOCS_ASSET_MEDIA_TYPES = {
 }
 
 
-def _docs_html_response(response: HTMLResponse, prefix: str) -> HTMLResponse:
-    """Add docs-specific accessibility assets to FastAPI's generated HTML."""
+def _docs_html_response(
+    response: HTMLResponse,
+    prefix: str | None = None,
+) -> HTMLResponse:
+    """Add language metadata and, for Swagger UI, accessibility assets."""
     html = bytes(response.body).decode("utf-8").replace(
         "<html>", '<html lang="en">', 1
     )
-    html = html.replace(
-        "</head>",
-        f'    <link rel="stylesheet" type="text/css" href="{prefix}/docs-assets/swagger-ui-a11y.css">\n</head>',
-        1,
-    )
-    html = html.replace(
-        "</body>",
-        f'    <script src="{prefix}/docs-assets/swagger-ui-a11y.js"></script>\n</body>',
-        1,
-    )
+    if prefix is not None:
+        html = html.replace(
+            "</head>",
+            f'    <link rel="stylesheet" type="text/css" href="{prefix}/docs-assets/swagger-ui-a11y.css">\n</head>',
+            1,
+        )
+        html = html.replace(
+            "</body>",
+            f'    <script src="{prefix}/docs-assets/swagger-ui-a11y.js"></script>\n</body>',
+            1,
+        )
     return HTMLResponse(html)
 
 
@@ -567,7 +571,10 @@ _DOCS_OAUTH_REDIRECT_PATH = (
 
 @app.get(_DOCS_OAUTH_REDIRECT_PATH, include_in_schema=False)
 async def dashboard_api_docs_oauth2_redirect():
-    return _docs_html_response(get_swagger_ui_oauth2_redirect_html(), "")
+    # This helper page contains no Swagger UI controls.  Do not inject the
+    # docs-only assets: a prefixed deployment would otherwise receive
+    # root-relative URLs during the OAuth callback.
+    return _docs_html_response(get_swagger_ui_oauth2_redirect_html())
 
 
 @app.get("/docs-assets/{filename}", include_in_schema=False)

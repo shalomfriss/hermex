@@ -12,10 +12,15 @@
       for (const child of Array.from(anchor.childNodes)) {
         replacement.appendChild(child.cloneNode(true));
       }
-      replacement.addEventListener("click", () => {
-        window.location.hash = href.startsWith("#") ? href.slice(1) : href;
-      });
+      const permalink = document.createElement("a");
+      permalink.className = "hermes-swagger-permalink";
+      permalink.href = href;
+      permalink.textContent = "#";
+      const operationName = anchor.textContent?.trim() || "operation";
+      permalink.setAttribute("aria-label", `Permalink to ${operationName}`);
+      permalink.title = `Permalink to ${operationName}`;
       anchor.replaceWith(replacement);
+      replacement.closest(".opblock-summary-control")?.insertAdjacentElement("afterend", permalink);
     }
   }
 

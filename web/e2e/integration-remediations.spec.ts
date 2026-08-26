@@ -82,6 +82,14 @@ test("self-hosted docs render without external resources or runtime failures", a
   await expect(docsPage.locator(".swagger-ui")).toBeVisible();
   await expect(docsPage.locator(".opblock-summary").first()).toBeVisible();
   await expect(docsPage.locator("html")).toHaveAttribute("lang", "en");
+  const permalink = docsPage.locator(".hermes-swagger-permalink").first();
+  await expect(permalink).toBeVisible();
+  const permalinkHref = await permalink.getAttribute("href");
+  expect(permalinkHref).toMatch(/^#/);
+  await permalink.focus();
+  await expect(permalink).toBeFocused();
+  await permalink.press("Enter");
+  await expect(docsPage).toHaveURL(new RegExp(`${permalinkHref!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`));
   const results = await new AxeBuilder({ page: docsPage })
     .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
     .analyze();

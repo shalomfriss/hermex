@@ -19,3 +19,12 @@
 .swagger-ui .json-schema-2020-12-expand-deep-button {
   color: #374151;
 }
+
+.swagger-ui .hermes-swagger-permalink {
+  color: #1d4ed8;
+  flex: 0 0 auto;
+  font-size: 1rem;
+  font-weight: 700;
+  padding: 0.5rem;
+  text-decoration: underline;
+}
