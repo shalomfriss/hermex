@@ -845,13 +845,13 @@ def _launchctl(
 
 
 def stop(_cfg: DeploymentConfig) -> None:
-    domain = f"gui/{os.getuid()}"
+    domain = f"gui/{os.getuid()}"  # windows-footgun: ok - macOS launchd supervisor
     for service in ("monitor", "ngrok", "caddy", "dashboard", "keycloak"):
         _launchctl("bootout", f"{domain}/{_LABEL_PREFIX}.{service}", check_result=False)
 
 
 def start(_cfg: DeploymentConfig) -> None:
-    domain = f"gui/{os.getuid()}"
+    domain = f"gui/{os.getuid()}"  # windows-footgun: ok - macOS launchd supervisor
     launch_dir = _launch_agent_dir()
     for service in (*_SERVICES, "monitor"):
         plist = launch_dir / f"{_LABEL_PREFIX}.{service}.plist"
