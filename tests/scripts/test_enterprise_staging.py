@@ -106,7 +106,8 @@ def test_launchd_jobs_restart_services_without_embedding_secrets(tmp_path: Path)
 def test_caddy_routes_idp_and_dashboard_with_external_forwarding(tmp_path: Path):
     text = build_caddyfile(config(tmp_path))
 
-    assert "127.0.0.1:19137" in text
+    assert ":19137" in text
+    assert "bind 127.0.0.1" in text
     assert "path /realms/* /resources/*" in text
     assert "reverse_proxy @keycloak 127.0.0.1:18081" in text
     assert "reverse_proxy 127.0.0.1:19138" in text

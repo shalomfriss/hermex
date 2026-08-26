@@ -218,7 +218,9 @@ def build_caddyfile(cfg: DeploymentConfig) -> str:
     auto_https off
 }}
 
-127.0.0.1:{cfg.proxy_port} {{
+:{cfg.proxy_port} {{
+    bind 127.0.0.1
+
     log {{
         output discard
     }}
