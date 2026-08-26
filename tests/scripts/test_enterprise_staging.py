@@ -299,6 +299,43 @@ def test_start_reloads_plists_before_kickstart(tmp_path: Path, monkeypatch):
         assert bootout < bootstrap < kickstart
 
 
+def test_start_retries_bootstrap_while_launchd_finishes_bootout(
+    tmp_path: Path, monkeypatch
+):
+    cfg = config(tmp_path)
+    launch_dir = tmp_path / "LaunchAgents"
+    launch_dir.mkdir()
+    for service in ("keycloak", "dashboard", "caddy", "ngrok", "monitor"):
+        (launch_dir / f"ai.hermes.enterprise-staging.{service}.plist").write_text(
+            "plist"
+        )
+    bootstrap_attempts: dict[str, int] = {}
+
+    def fake_launchctl(*args, check_result=True):
+        if args[0] == "bootstrap":
+            service = Path(args[2]).stem.rsplit(".", 1)[-1]
+            bootstrap_attempts[service] = bootstrap_attempts.get(service, 0) + 1
+            if bootstrap_attempts[service] == 1:
+                return SimpleNamespace(returncode=5, stdout="", stderr="busy")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        "scripts.enterprise_staging._launch_agent_dir", lambda: launch_dir
+    )
+    monkeypatch.setattr("scripts.enterprise_staging._launchctl", fake_launchctl)
+    monkeypatch.setattr("scripts.enterprise_staging.time.sleep", lambda _delay: None)
+
+    start(cfg)
+
+    assert bootstrap_attempts == {
+        "keycloak": 2,
+        "dashboard": 2,
+        "caddy": 2,
+        "ngrok": 2,
+        "monitor": 2,
+    }
+
+
 def test_install_prerequisites_require_active_release_and_state(tmp_path: Path):
     cfg = config(tmp_path)
 

@@ -844,9 +844,14 @@ def start(_cfg: DeploymentConfig) -> None:
         plist = launch_dir / f"{_LABEL_PREFIX}.{service}.plist"
         label = f"{domain}/{_LABEL_PREFIX}.{service}"
         _launchctl("bootout", label, check_result=False)
-        result = _launchctl("bootstrap", domain, str(plist), check_result=False)
-        if result.returncode != 0:
-            raise RuntimeError(f"could not load {service}: {result.stderr.strip()}")
+        deadline = time.monotonic() + 10
+        while True:
+            result = _launchctl("bootstrap", domain, str(plist), check_result=False)
+            if result.returncode == 0:
+                break
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"could not load {service}: {result.stderr.strip()}")
+            time.sleep(0.25)
         _launchctl("kickstart", "-k", label)
 
 
