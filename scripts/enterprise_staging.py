@@ -64,7 +64,7 @@ class DeploymentConfig:
     keycloak_command: Path
     caddy_command: Path
     ngrok_command: Path
-    dashboard_host: str = "127.0.0.2"
+    dashboard_host: str = "127.0.0.1"
     dashboard_port: int = 9138
     proxy_port: int = 9137
     keycloak_port: int = 8081
@@ -121,10 +121,8 @@ class DeploymentConfig:
             raise ValueError("service ports must be unprivileged TCP ports")
         if self.health_interval_seconds < 15:
             raise ValueError("health interval must be at least 15 seconds")
-        if self.dashboard_host != "127.0.0.2":
-            raise ValueError(
-                "dashboard_host must be the isolated loopback alias 127.0.0.2"
-            )
+        if self.dashboard_host != "127.0.0.1":
+            raise ValueError("dashboard_host must be the loopback address 127.0.0.1")
         for value in (
             self.state_root,
             self.dashboard_python,
@@ -162,7 +160,7 @@ class DeploymentConfig:
             keycloak_command=Path(raw["keycloak_command"]),
             caddy_command=Path(raw["caddy_command"]),
             ngrok_command=Path(raw["ngrok_command"]),
-            dashboard_host=str(raw.get("dashboard_host", "127.0.0.2")),
+            dashboard_host=str(raw.get("dashboard_host", "127.0.0.1")),
             dashboard_port=int(raw.get("dashboard_port", 9138)),
             proxy_port=int(raw.get("proxy_port", 9137)),
             keycloak_port=int(raw.get("keycloak_port", 8081)),
@@ -613,6 +611,7 @@ def _service_command(
                 cfg.dashboard_host,
                 "--port",
                 str(cfg.dashboard_port),
+                "--require-auth",
                 "--skip-build",
                 "--no-open",
             ],

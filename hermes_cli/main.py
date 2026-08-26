@@ -11234,7 +11234,9 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
 
     try:
         from hermes_cli.web_server import should_require_auth
-        if not should_require_auth(host):
+        if not should_require_auth(
+            host, force_auth=bool(getattr(args, "require_auth", False))
+        ):
             return  # loopback bind — gate never engages
     except Exception:
         return  # if we can't tell, defer to start_server's own gate
@@ -11585,6 +11587,8 @@ def cmd_dashboard(args):
             reexec_argv.append("--no-open")
         if getattr(args, "insecure", False):
             reexec_argv.append("--insecure")
+        if getattr(args, "require_auth", False):
+            reexec_argv.append("--require-auth")
         if getattr(args, "skip_build", False):
             reexec_argv.append("--skip-build")
         from tools.environments.local import build_subprocess_env
@@ -11785,6 +11789,7 @@ def cmd_dashboard(args):
         port=args.port,
         open_browser=not args.no_open,
         allow_public=getattr(args, "insecure", False),
+        require_auth=getattr(args, "require_auth", False),
         initial_profile=getattr(args, "open_profile", "") or "",
         headless=_headless_backend,
         ssh_session_token=_ssh_session_token,
