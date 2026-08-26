@@ -64,6 +64,7 @@ class DeploymentConfig:
     keycloak_command: Path
     caddy_command: Path
     ngrok_command: Path
+    dashboard_host: str = "127.0.0.2"
     dashboard_port: int = 9138
     proxy_port: int = 9137
     keycloak_port: int = 8081
@@ -120,6 +121,10 @@ class DeploymentConfig:
             raise ValueError("service ports must be unprivileged TCP ports")
         if self.health_interval_seconds < 15:
             raise ValueError("health interval must be at least 15 seconds")
+        if self.dashboard_host != "127.0.0.2":
+            raise ValueError(
+                "dashboard_host must be the isolated loopback alias 127.0.0.2"
+            )
         for value in (
             self.state_root,
             self.dashboard_python,
@@ -139,6 +144,7 @@ class DeploymentConfig:
             "keycloak_command": str(self.keycloak_command),
             "caddy_command": str(self.caddy_command),
             "ngrok_command": str(self.ngrok_command),
+            "dashboard_host": self.dashboard_host,
             "dashboard_port": self.dashboard_port,
             "proxy_port": self.proxy_port,
             "keycloak_port": self.keycloak_port,
@@ -156,6 +162,7 @@ class DeploymentConfig:
             keycloak_command=Path(raw["keycloak_command"]),
             caddy_command=Path(raw["caddy_command"]),
             ngrok_command=Path(raw["ngrok_command"]),
+            dashboard_host=str(raw.get("dashboard_host", "127.0.0.2")),
             dashboard_port=int(raw.get("dashboard_port", 9138)),
             proxy_port=int(raw.get("proxy_port", 9137)),
             keycloak_port=int(raw.get("keycloak_port", 8081)),
@@ -234,8 +241,8 @@ def build_caddyfile(cfg: DeploymentConfig) -> str:
         header_down -Server
     }}
 
-    reverse_proxy 127.0.0.1:{cfg.dashboard_port} {{
-        header_up Host 127.0.0.1:{cfg.dashboard_port}
+    reverse_proxy {cfg.dashboard_host}:{cfg.dashboard_port} {{
+        header_up Host {cfg.dashboard_host}:{cfg.dashboard_port}
         header_up X-Forwarded-Host {host}
         header_up X-Forwarded-Proto https
         header_up X-Forwarded-Port 443
@@ -337,10 +344,15 @@ def _private_tarinfo(info: tarfile.TarInfo) -> tarfile.TarInfo:
 
 def _assert_services_stopped(cfg: DeploymentConfig) -> None:
     listening: list[int] = []
-    for port in (cfg.dashboard_port, cfg.proxy_port, cfg.keycloak_port):
+    endpoints = (
+        (cfg.dashboard_host, cfg.dashboard_port),
+        ("127.0.0.1", cfg.proxy_port),
+        ("127.0.0.1", cfg.keycloak_port),
+    )
+    for host, port in endpoints:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
             probe.settimeout(0.2)
-            if probe.connect_ex(("127.0.0.1", port)) == 0:
+            if probe.connect_ex((host, port)) == 0:
                 listening.append(port)
     if listening:
         joined = ", ".join(str(port) for port in listening)
@@ -598,7 +610,7 @@ def _service_command(
                 str(cfg.active_release / "hermes"),
                 "dashboard",
                 "--host",
-                "127.0.0.1",
+                cfg.dashboard_host,
                 "--port",
                 str(cfg.dashboard_port),
                 "--skip-build",
@@ -608,7 +620,7 @@ def _service_command(
             env,
         )
     if service == "caddy":
-        _wait_url(f"http://127.0.0.1:{cfg.dashboard_port}/api/health")
+        _wait_url(f"http://{cfg.dashboard_host}:{cfg.dashboard_port}/api/health")
         return (
             [
                 str(cfg.caddy_command),
@@ -726,7 +738,9 @@ def check(cfg: DeploymentConfig, *, write_status: bool = False) -> dict[str, obj
     cfg.validate()
     base = cfg.public_url.rstrip("/")
     checks = {
-        "dashboard_local": _probe(f"http://127.0.0.1:{cfg.dashboard_port}/api/health"),
+        "dashboard_local": _probe(
+            f"http://{cfg.dashboard_host}:{cfg.dashboard_port}/api/health"
+        ),
         "idp_local": _probe(
             f"http://127.0.0.1:{cfg.keycloak_port}/realms/hermes-staging"
         ),

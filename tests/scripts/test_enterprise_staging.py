@@ -110,8 +110,8 @@ def test_caddy_routes_idp_and_dashboard_with_external_forwarding(tmp_path: Path)
     assert "bind 127.0.0.1" in text
     assert "path /realms/* /resources/*" in text
     assert "reverse_proxy @keycloak 127.0.0.1:18081" in text
-    assert "reverse_proxy 127.0.0.1:19138" in text
-    assert "header_up Host 127.0.0.1:19138" in text
+    assert "reverse_proxy 127.0.0.2:19138" in text
+    assert "header_up Host 127.0.0.2:19138" in text
     assert "X-Forwarded-Proto https" in text
     assert "X-Forwarded-Host hermes-test.example.test" in text
     assert "header_down -Server" in text
@@ -127,6 +127,20 @@ def test_keycloak_is_bound_to_loopback(tmp_path: Path):
     command, _cwd, _env = _service_command(cfg, "keycloak")
 
     assert "--http-host=127.0.0.1" in command
+
+
+def test_dashboard_uses_isolated_loopback_alias_that_keeps_auth_gate_on(
+    tmp_path: Path, monkeypatch
+):
+    cfg = config(tmp_path)
+    release = cfg.state_root / "releases" / "accepted"
+    (release / "hermes_cli" / "web_dist").mkdir(parents=True)
+    activate_release(cfg, release)
+    monkeypatch.setattr("scripts.enterprise_staging._wait_url", lambda *a, **k: None)
+
+    command, _cwd, _env = _service_command(cfg, "dashboard")
+
+    assert command[command.index("--host") + 1] == "127.0.0.2"
 
 
 def test_config_rejects_unsafe_public_url_and_port_collisions(tmp_path: Path):

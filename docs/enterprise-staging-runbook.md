@@ -13,10 +13,10 @@ customer browser
   -> reserved ngrok HTTPS endpoint
   -> Caddy on 127.0.0.1:9137
        -> Keycloak on 127.0.0.1:8081 for /realms/* and /resources/*
-       -> Hermes dashboard on 127.0.0.1:9138 for all other HTTP and WebSocket traffic
+       -> Hermes dashboard on 127.0.0.2:9138 for all other HTTP and WebSocket traffic
 ```
 
-Caddy supplies the fixed external Host, `X-Forwarded-Host`, `X-Forwarded-Proto: https`, and `X-Forwarded-Port: 443`. Hermes must configure only loopback addresses under `dashboard.trusted_proxies`. Caddy strips upstream `Server` headers and does not terminate public TLS; ngrok owns the public certificate and stable endpoint. Caddy's reverse proxy preserves WebSocket upgrades and disables response buffering.
+Caddy supplies the fixed external `X-Forwarded-Host`, `X-Forwarded-Proto: https`, and `X-Forwarded-Port: 443`. It binds only `127.0.0.1`; Hermes binds the separate macOS loopback alias `127.0.0.2` and receives that exact value as its upstream `Host`. The alias keeps the application auth gate engaged while neither origin is reachable from the LAN. Hermes must configure only loopback addresses under `dashboard.trusted_proxies`. Caddy strips upstream `Server` headers and does not terminate public TLS; ngrok owns the public certificate and stable endpoint. Caddy's reverse proxy preserves WebSocket upgrades and disables response buffering.
 
 The supported staging topology is one dashboard process and one replica. Native authorization codes, browser login state, and WebSocket tickets are process-local. Do not add uvicorn workers or replicas.
 
@@ -82,6 +82,7 @@ Create `$STATE_ROOT/deployment.json` with mode 0600. All paths must be absolute:
 ```json
 {
   "caddy_command": "/absolute/path/to/caddy",
+  "dashboard_host": "127.0.0.2",
   "dashboard_port": 9138,
   "dashboard_python": "/absolute/path/to/hermes/python",
   "health_interval_seconds": 60,
