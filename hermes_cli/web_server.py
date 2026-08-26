@@ -507,13 +507,25 @@ app = FastAPI(
 _DOCS_ASSET_MEDIA_TYPES = {
     "swagger-ui.css": "text/css",
     "swagger-ui-bundle.js": "text/javascript",
+    "swagger-ui-a11y.css": "text/css",
+    "swagger-ui-a11y.js": "text/javascript",
 }
 
 
-def _docs_html_response(response: HTMLResponse) -> HTMLResponse:
-    """Add document language metadata to FastAPI's generated docs HTML."""
+def _docs_html_response(response: HTMLResponse, prefix: str) -> HTMLResponse:
+    """Add docs-specific accessibility assets to FastAPI's generated HTML."""
     html = bytes(response.body).decode("utf-8").replace(
         "<html>", '<html lang="en">', 1
+    )
+    html = html.replace(
+        "</head>",
+        f'    <link rel="stylesheet" type="text/css" href="{prefix}/docs-assets/swagger-ui-a11y.css">\n</head>',
+        1,
+    )
+    html = html.replace(
+        "</body>",
+        f'    <script src="{prefix}/docs-assets/swagger-ui-a11y.js"></script>\n</body>',
+        1,
     )
     return HTMLResponse(html)
 
@@ -543,7 +555,8 @@ async def dashboard_api_docs(request: Request):
             swagger_js_url=f"{prefix}/docs-assets/swagger-ui-bundle.js",
             swagger_css_url=f"{prefix}/docs-assets/swagger-ui.css",
             swagger_favicon_url=f"{prefix}/favicon.ico",
-        )
+        ),
+        prefix,
     )
 
 
@@ -554,7 +567,7 @@ _DOCS_OAUTH_REDIRECT_PATH = (
 
 @app.get(_DOCS_OAUTH_REDIRECT_PATH, include_in_schema=False)
 async def dashboard_api_docs_oauth2_redirect():
-    return _docs_html_response(get_swagger_ui_oauth2_redirect_html())
+    return _docs_html_response(get_swagger_ui_oauth2_redirect_html(), "")
 
 
 @app.get("/docs-assets/{filename}", include_in_schema=False)

@@ -1,0 +1,21 @@
+.swagger-ui .info .title small > pre,
+.swagger-ui .info .title .version-stamp,
+.swagger-ui .info .title .version-stamp > pre {
+  color: #111827;
+}
+
+.swagger-ui .info .url {
+  color: #1d4ed8;
+}
+
+.swagger-ui .opblock .opblock-summary-method {
+  color: #111827;
+}
+
+.swagger-ui .opblock.opblock-head .opblock-summary-method {
+  color: #ffffff;
+}
+
+.swagger-ui .json-schema-2020-12-expand-deep-button {
+  color: #374151;
+}

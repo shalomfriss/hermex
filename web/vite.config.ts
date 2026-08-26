@@ -19,6 +19,7 @@ import path from "path";
 const BACKEND = process.env.HERMES_DASHBOARD_URL ?? "http://127.0.0.1:9119";
 const require = createRequire(import.meta.url);
 const SWAGGER_UI_DIST = path.dirname(require.resolve("swagger-ui-dist/package.json"));
+const SWAGGER_UI_A11Y_DIST = path.resolve(__dirname, "docs-assets");
 
 /** Emit the API docs runtime beside the production dashboard bundle.
  *  Keeping these stable, same-origin URLs avoids a runtime CDN dependency and
@@ -37,6 +38,13 @@ function swaggerUiAssets(): Plugin {
           type: "asset",
           fileName: `docs-assets/${outputName}`,
           source: fs.readFileSync(path.join(SWAGGER_UI_DIST, sourceName)),
+        });
+      }
+      for (const filename of ["swagger-ui-a11y.css", "swagger-ui-a11y.js"]) {
+        this.emitFile({
+          type: "asset",
+          fileName: `docs-assets/${filename}`,
+          source: fs.readFileSync(path.join(SWAGGER_UI_A11Y_DIST, filename)),
         });
       }
     },

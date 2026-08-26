@@ -80,7 +80,15 @@ test("self-hosted docs render without external resources or runtime failures", a
 
   await docsPage.goto("/docs");
   await expect(docsPage.locator(".swagger-ui")).toBeVisible();
+  await expect(docsPage.locator(".opblock-summary").first()).toBeVisible();
   await expect(docsPage.locator("html")).toHaveAttribute("lang", "en");
+  const results = await new AxeBuilder({ page: docsPage })
+    .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
+    .analyze();
+  const blocking = results.violations.filter(
+    (violation) => violation.impact === "critical" || violation.impact === "serious",
+  );
+  expect(blocking, `/docs axe violations: ${JSON.stringify(blocking, null, 2)}`).toEqual([]);
   expect(runtimeErrors).toEqual([]);
   expect(externalResources).toEqual([]);
 });
