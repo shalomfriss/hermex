@@ -29,6 +29,7 @@ _VERSION = "v2"
 _KEYRING_VERSION = 1
 _KEY_BYTES = 32
 _MAX_KEYS = 2
+_MAX_KEYRING_BYTES = 4096
 
 
 def _b64url(raw: bytes) -> str:
@@ -58,8 +59,23 @@ class _StateLock:
     def __init__(self, path: Path):
         self.path = path
         self._handle = None
+        self._overlapped = None
 
     def __enter__(self):
+        if os.name == "nt":
+            from hermes_cli.windows_secure_files import (
+                acquire_secure_lock,
+                ensure_secure_directory,
+            )
+
+            ensure_secure_directory(
+                self.path.parent, label="refresh-binding secret directory"
+            )
+            self._handle, self._overlapped = acquire_secure_lock(
+                self.path, label="refresh-binding lock"
+            )
+            return self
+
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if os.name == "posix":
             os.chmod(self.path.parent, 0o700)
@@ -75,26 +91,22 @@ class _StateLock:
             import fcntl
 
             fcntl.flock(self._handle.fileno(), fcntl.LOCK_EX)
-        else:
-            import msvcrt
-
-            self._handle.seek(0)
-            msvcrt.locking(self._handle.fileno(), msvcrt.LK_LOCK, 1)
         return self
 
     def __exit__(self, exc_type, exc, tb):
         if self._handle is None:
             return
+        if os.name == "nt":
+            from hermes_cli.windows_secure_files import release_secure_lock
+
+            release_secure_lock(self._handle, self._overlapped)
+            self._handle = None
+            self._overlapped = None
+            return
         try:
-            if os.name == "posix":
-                import fcntl
+            import fcntl
 
-                fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)
-            else:
-                import msvcrt
-
-                self._handle.seek(0)
-                msvcrt.locking(self._handle.fileno(), msvcrt.LK_UNLCK, 1)
+            fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)
         finally:
             self._handle.close()
             self._handle = None
@@ -157,6 +169,17 @@ def _parse_keyring(raw: Any) -> tuple[str, list[tuple[str, bytes]]] | None:
 
 def _read_keyring(path: Path) -> tuple[str, list[tuple[str, bytes]]] | None:
     try:
+        if os.name == "nt":
+            from hermes_cli.windows_secure_files import read_secure_bytes
+
+            raw = json.loads(
+                read_secure_bytes(
+                    path,
+                    maximum=_MAX_KEYRING_BYTES,
+                    label="refresh-binding keyring",
+                )
+            )
+            return _parse_keyring(raw)
         if path.is_symlink():
             return None
         flags = os.O_RDONLY
@@ -174,7 +197,27 @@ def _read_keyring(path: Path) -> tuple[str, list[tuple[str, bytes]]] | None:
 
 
 def _write_keyring(path: Path, keyring: dict[str, Any]) -> None:
+    if os.name == "nt":
+        from hermes_cli.windows_secure_files import atomic_write_secure_bytes
+
+        payload = json.dumps(
+            keyring,
+            indent=2,
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode("utf-8")
+        if len(payload) > _MAX_KEYRING_BYTES:
+            raise OSError("refresh-binding keyring is too large")
+        atomic_write_secure_bytes(path, payload, label="refresh-binding keyring")
+        return
     atomic_json_write(path, keyring, mode=0o600, sort_keys=True)
+    if os.name == "posix":
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        directory_fd = os.open(path.parent, flags)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
 
 
 def _load_or_create_keyring() -> tuple[str, list[tuple[str, bytes]]] | None:
