@@ -161,14 +161,10 @@ class DashboardAuthProvider(ABC):
         treats expiry and unreachable differently (expiry → refresh;
         unreachable → 503).
       * ``refresh_session`` raises ``RefreshExpiredError`` when the refresh
-        token is invalid for that provider. Middleware tries the remaining
-        providers because an opaque foreign token can be indistinguishable
-        from an expired one; it forces re-login only after every reachable
-        provider rejects the token. Raises ``ProviderError`` on network
-        failure; middleware still tries remaining providers, but returns 503
-        without clearing cookies if none succeeds and any was unavailable.
-        ``AccessDeniedError`` is terminal and must never fall through to another
-        provider or trigger another refresh.
+        token is invalid for its integrity-bound owner. Refresh credentials
+        are never submitted to another provider: rejection forces re-login,
+        while ``ProviderError`` returns 503 without clearing credentials.
+        ``AccessDeniedError`` is terminal and must not trigger another refresh.
       * ``revoke_session`` is best-effort and must not raise.
 
     Subclasses MUST set ``name`` (lowercase identifier, stable forever)

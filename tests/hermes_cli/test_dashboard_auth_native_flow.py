@@ -31,7 +31,12 @@ from hermes_cli.dashboard_auth import (
     register_provider,
 )
 from hermes_cli.dashboard_auth import native_flow
-from hermes_cli.dashboard_auth.base import Session
+from hermes_cli.dashboard_auth.base import (
+    ProviderError,
+    RefreshExpiredError,
+    Session,
+)
+from hermes_cli.dashboard_auth.refresh_binding import mint_refresh_binding
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 
 
@@ -723,10 +728,113 @@ def test_password_login_without_broker_still_mints_cookies(pw_gated_client):
 # ---------------------------------------------------------------------------
 
 
+def _native_tokens(client):
+    verifier, challenge = _make_pkce()
+    code, _state = _walk_native_login(
+        client,
+        redirect_uri="http://127.0.0.1:53999/cb",
+        challenge=challenge,
+    )
+    response = client.post(
+        "/auth/native/token",
+        json={"code": code, "code_verifier": verifier},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_native_token_exchange_returns_integrity_bound_refresh_ownership(gated_client):
+    tokens = _native_tokens(gated_client)
+
+    assert tokens["refresh_binding"]
+
+
+def test_native_refresh_rotates_binding_without_calling_non_owner(gated_client):
+    tokens = _native_tokens(gated_client)
+
+    class NonOwner(StubAuthProvider):
+        name = "nonowner"
+
+        def __init__(self):
+            super().__init__()
+            self.refresh_calls = 0
+
+        def refresh_session(self, *, refresh_token: str):
+            self.refresh_calls += 1
+            raise RefreshExpiredError("foreign token")
+
+    non_owner = NonOwner()
+    clear_providers()
+    register_provider(non_owner)
+    register_provider(StubAuthProvider())
+
+    response = gated_client.post(
+        "/auth/native/refresh",
+        json={
+            "refresh_token": tokens["refresh_token"],
+            "refresh_binding": tokens["refresh_binding"],
+            "provider": "nonowner",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    rotated = response.json()
+    assert rotated["refresh_binding"]
+    assert non_owner.refresh_calls == 0
+
+
+@pytest.mark.parametrize("owner_failure", ["rejected", "outage"])
+def test_native_refresh_never_discloses_owner_token_to_non_owner(
+    gated_client, owner_failure,
+):
+    tokens = _native_tokens(gated_client)
+
+    class Owner(StubAuthProvider):
+        name = "stub"
+
+        def refresh_session(self, *, refresh_token: str):
+            if owner_failure == "outage":
+                raise ProviderError("owner unavailable")
+            raise RefreshExpiredError("owner rejected token")
+
+    class NonOwner(StubAuthProvider):
+        name = "nonowner"
+
+        def __init__(self):
+            super().__init__()
+            self.refresh_calls = 0
+
+        def refresh_session(self, *, refresh_token: str):
+            self.refresh_calls += 1
+            raise RefreshExpiredError("foreign token")
+
+    non_owner = NonOwner()
+    clear_providers()
+    register_provider(Owner())
+    register_provider(non_owner)
+
+    response = gated_client.post(
+        "/auth/native/refresh",
+        json={
+            "refresh_token": tokens["refresh_token"],
+            "refresh_binding": tokens["refresh_binding"],
+            # A mutable compatibility hint cannot redirect the credential.
+            "provider": "nonowner",
+        },
+    )
+
+    assert response.status_code == (503 if owner_failure == "outage" else 401)
+    assert non_owner.refresh_calls == 0
+
+
 def test_native_refresh_dead_token_returns_401(gated_client):
     r = gated_client.post(
         "/auth/native/refresh",
-        json={"refresh_token": "garbage-not-a-real-rt", "provider": "stub"},
+        json={
+            "refresh_token": "garbage-not-a-real-rt",
+            "refresh_binding": "invalid-binding",
+            "provider": "stub",
+        },
     )
     assert r.status_code == 401
     assert r.json()["error"] == "session_expired"
@@ -752,6 +860,10 @@ def test_native_refresh_without_prior_identity_forces_controlled_relogin(
         "/auth/native/refresh",
         json={
             "refresh_token": "recognized-refresh-token",
+            "refresh_binding": mint_refresh_binding(
+                provider="native-prior-identity-required",
+                refresh_token="recognized-refresh-token",
+            ),
             "provider": "native-prior-identity-required",
         },
     )
@@ -776,7 +888,14 @@ def test_native_refresh_access_denial_is_terminal_and_generic(gated_client):
 
     response = gated_client.post(
         "/auth/native/refresh",
-        json={"refresh_token": "recognized-token", "provider": "native-denying"},
+        json={
+            "refresh_token": "recognized-token",
+            "refresh_binding": mint_refresh_binding(
+                provider="native-denying",
+                refresh_token="recognized-token",
+            ),
+            "provider": "native-denying",
+        },
     )
 
     assert response.status_code == 403

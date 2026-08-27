@@ -18,6 +18,7 @@ Verifies the contract documented in Phase 6 v2 of the plan:
 
 from __future__ import annotations
 
+from http.cookies import SimpleCookie
 from urllib.parse import quote
 
 import pytest
@@ -210,8 +211,8 @@ class TestTransparentRefreshOnAccessTokenEviction:
 
     def test_provider_hint_routes_refresh_to_token_owner(self, gated_app):
         """A Nous-style RT must not be rejected by Basic just because Basic
-        was registered first. The non-secret provider hint routes directly to
-        the provider that minted the session."""
+        was registered first. The integrity-bound owner routes directly to the
+        provider that minted the session."""
         class WrongProvider(StubAuthProvider):
             name = "basic"
 
@@ -230,16 +231,145 @@ class TestTransparentRefreshOnAccessTokenEviction:
         register_provider(StubAuthProvider(default_ttl=900))
         gated_app.cookies.clear()
         gated_app.cookies.set(SESSION_RT_COOKIE, valid_rt)
-        gated_app.cookies.set(SESSION_PROVIDER_COOKIE, "stub")
+        gated_app.cookies.set(
+            SESSION_PROVIDER_COOKIE,
+            self._owner_cookie(refresh_token=valid_rt, provider="stub"),
+        )
 
         response = gated_app.get("/api/sessions", follow_redirects=False)
 
         assert response.status_code == 200
         assert wrong.refresh_calls == 0
         assert any(
-            SESSION_PROVIDER_COOKIE in cookie and "stub" in cookie
+            SESSION_PROVIDER_COOKIE in cookie
             for cookie in response.headers.get_list("set-cookie")
         )
+
+    @staticmethod
+    def _owner_cookie(*, refresh_token: str, provider: str = "stub") -> str:
+        response = Response("ok")
+        set_session_cookies(
+            response,
+            access_token="expired-at",
+            refresh_token=refresh_token,
+            access_token_expires_in=60,
+            use_https=False,
+            provider=provider,
+        )
+        parsed = SimpleCookie()
+        for name, value in response.raw_headers:
+            if name.lower() == b"set-cookie":
+                parsed.load(value.decode("latin-1"))
+        return parsed[SESSION_PROVIDER_COOKIE].value
+
+    @pytest.mark.parametrize("owner_failure", ["rejected", "outage"])
+    def test_refresh_never_discloses_owner_token_to_non_owner(
+        self, gated_app, owner_failure,
+    ):
+        import time as _t
+
+        from tests.hermes_cli.conftest_dashboard_auth import _sign
+
+        class Owner(StubAuthProvider):
+            name = "owner"
+
+            def refresh_session(self, *, refresh_token: str):
+                if owner_failure == "outage":
+                    raise ProviderError("owner unavailable")
+                raise RefreshExpiredError("owner rejected token")
+
+        class NonOwner(StubAuthProvider):
+            name = "nonowner"
+
+            def __init__(self):
+                super().__init__()
+                self.refresh_calls = 0
+
+            def refresh_session(self, *, refresh_token: str):
+                self.refresh_calls += 1
+                raise RefreshExpiredError("foreign token")
+
+        refresh_token = _sign(
+            {"sub": "u", "kind": "refresh", "exp": int(_t.time()) + 3600}
+        )
+        owner = Owner()
+        non_owner = NonOwner()
+        clear_providers()
+        register_provider(owner)
+        register_provider(non_owner)
+        gated_app.cookies.clear()
+        gated_app.cookies.set(SESSION_RT_COOKIE, refresh_token)
+        gated_app.cookies.set(
+            SESSION_PROVIDER_COOKIE,
+            self._owner_cookie(refresh_token=refresh_token, provider="owner"),
+        )
+
+        response = gated_app.get("/api/sessions", follow_redirects=False)
+
+        assert response.status_code == (503 if owner_failure == "outage" else 401)
+        assert non_owner.refresh_calls == 0
+        deletions = [
+            value
+            for value in response.headers.get_list("set-cookie")
+            if SESSION_RT_COOKIE in value and "Max-Age=0" in value
+        ]
+        if owner_failure == "outage":
+            assert deletions == []
+        else:
+            assert deletions
+
+    def test_mutable_provider_hint_is_not_accepted_as_refresh_ownership(self, gated_app):
+        class RecordingProvider(StubAuthProvider):
+            name = "nonowner"
+
+            def __init__(self):
+                super().__init__()
+                self.refresh_calls = 0
+
+            def refresh_session(self, *, refresh_token: str):
+                self.refresh_calls += 1
+                raise RefreshExpiredError("foreign token")
+
+        provider = RecordingProvider()
+        clear_providers()
+        register_provider(provider)
+        gated_app.cookies.clear()
+        gated_app.cookies.set(SESSION_RT_COOKIE, "provider-scoped-secret")
+        gated_app.cookies.set(SESSION_PROVIDER_COOKIE, "nonowner")
+
+        response = gated_app.get("/api/sessions", follow_redirects=False)
+
+        assert response.status_code == 401
+        assert provider.refresh_calls == 0
+
+    def test_logout_revokes_only_with_bound_owner(self, gated_app):
+        class RevokingProvider(StubAuthProvider):
+            def __init__(self, name: str):
+                super().__init__()
+                self.name = name
+                self.revoke_calls = 0
+
+            def revoke_session(self, *, refresh_token: str) -> None:
+                self.revoke_calls += 1
+
+        owner = RevokingProvider("owner")
+        non_owner = RevokingProvider("nonowner")
+        clear_providers()
+        register_provider(owner)
+        register_provider(non_owner)
+        refresh_token = "provider-scoped-secret"
+        gated_app.cookies.clear()
+        gated_app.cookies.set(SESSION_RT_COOKIE, refresh_token)
+        gated_app.cookies.set(
+            SESSION_PROVIDER_COOKIE,
+            self._owner_cookie(refresh_token=refresh_token, provider="owner"),
+        )
+
+        response = gated_app.post("/auth/logout", follow_redirects=False)
+
+        assert response.status_code == 302
+        assert owner.revoke_calls == 1
+        assert non_owner.revoke_calls == 0
 
 
 

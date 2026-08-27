@@ -22,6 +22,7 @@ from hermes_cli import web_server
 from hermes_cli.dashboard_auth import clear_providers, register_provider
 from hermes_cli.dashboard_auth.cookies import (
     SESSION_AT_COOKIE,
+    SESSION_PROVIDER_COOKIE,
     SESSION_RT_COOKIE,
     _resolved_name,
 )
@@ -316,12 +317,20 @@ def test_refresh_group_removal_denies_and_provider_outage_is_503(oidc_app):
     refresh_token = client.cookies.get(
         _resolved_name(SESSION_RT_COOKIE, use_https=True, prefix="")
     )
+    refresh_binding = client.cookies.get(
+        _resolved_name(SESSION_PROVIDER_COOKIE, use_https=True, prefix="")
+    )
     assert refresh_token
+    assert refresh_binding
 
     oidc.state.groups = ["viewers"]
     denied = client.post(
         "/auth/native/refresh",
-        json={"provider": "self-hosted", "refresh_token": refresh_token},
+        json={
+            "provider": "self-hosted",
+            "refresh_token": refresh_token,
+            "refresh_binding": refresh_binding,
+        },
     )
     assert denied.status_code == 403
     assert denied.json()["error"] == "access_denied"

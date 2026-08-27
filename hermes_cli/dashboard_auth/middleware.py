@@ -27,7 +27,7 @@ from typing import Awaitable, Callable
 from fastapi import Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
-from hermes_cli.dashboard_auth import list_session_providers
+from hermes_cli.dashboard_auth import get_provider, list_session_providers
 from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
 from hermes_cli.dashboard_auth.base import (
     AccessDeniedError,
@@ -40,7 +40,6 @@ from hermes_cli.dashboard_auth.cookies import (
     read_session_cookies,
     read_session_provider,
     read_sso_attempt_cookie,
-    set_session_provider_cookie,
     set_sso_attempt_cookie,
 )
 from hermes_cli.dashboard_auth.client_ip import client_ip
@@ -490,7 +489,7 @@ async def gated_auth_middleware(
         return _unauth_response(request, reason="invalid_or_expired_session")
 
     at, _rt = read_session_cookies(request)
-    provider_hint = read_session_provider(request)
+    refresh_owner = read_session_provider(request, refresh_token=_rt or "")
     if not at and not _rt:
         # Neither token present — no session at all. Nothing to verify or
         # refresh. Before falling back to the /login interstitial, try to
@@ -536,7 +535,7 @@ async def gated_auth_middleware(
         # 503 — distinguishing "transient IDP outage" (don't force re-login)
         # from "token genuinely invalid" (fall through to refresh/relogin).
         unreachable_provider: str | None = None
-        for provider in _ordered_session_providers(provider_hint):
+        for provider in _ordered_session_providers(refresh_owner):
             try:
                 session = provider.verify_session(access_token=at)
             except AccessDeniedError as e:
@@ -579,7 +578,7 @@ async def gated_auth_middleware(
                 request,
                 refresh_token=_rt,
                 access_token=at,
-                provider_hint=provider_hint,
+                refresh_owner=refresh_owner,
             )
         except AccessDeniedError as e:
             return access_denied_response(
@@ -630,7 +629,7 @@ async def gated_auth_middleware(
                 request,
                 refresh_token=_rt,
                 access_token=at,
-                provider_hint=provider_hint or session.provider,
+                refresh_owner=refresh_owner,
             )
         except AccessDeniedError as e:
             return access_denied_response(
@@ -651,16 +650,6 @@ async def gated_auth_middleware(
 
     request.state.session = session
     response = await call_next(request)
-    if not provider_hint and session.provider:
-        from hermes_cli.dashboard_auth.cookies import detect_https
-        from hermes_cli.dashboard_auth.prefix import prefix_from_request
-
-        set_session_provider_cookie(
-            response,
-            provider=session.provider,
-            use_https=detect_https(request),
-            prefix=prefix_from_request(request),
-        )
     return response
 
 
@@ -766,76 +755,52 @@ def _attempt_refresh(
     *,
     refresh_token,
     access_token: str = "",
-    provider_hint: str | None = None,
+    refresh_owner: str | None = None,
 ):
     """Try to rotate an expired session via the refresh token.
 
-    The provider hint only changes candidate order. ``RefreshExpiredError``
-    rejects the token for that candidate, but cannot prove ownership because
-    providers such as Basic raise it for foreign opaque tokens too. Likewise,
-    ``ProviderError`` only makes that candidate unavailable. Both are audited
-    and the remaining providers are tried. Returns ``None`` only when there is
-    no RT or every reachable provider rejects it. If no provider succeeds and
-    at least one raised ``ProviderError``, re-raises with that provider's name
-    so the caller can return 503 without clearing potentially valid cookies.
+    ``refresh_owner`` comes from an integrity-protected proof bound to the exact
+    token. Missing, stale, removed, or invalid ownership fails closed without
+    submitting the bearer credential to any provider. The bound owner alone may
+    rotate it: rejection returns ``None`` (401/re-auth) and outage raises
+    ``ProviderError`` (503 while preserving cookies).
     """
-    if not refresh_token:
+    if not refresh_token or not refresh_owner:
         return None
-    providers = _ordered_session_providers(provider_hint)
-    return _attempt_refresh_locked(
-        request,
-        providers=providers,
-        refresh_token=refresh_token,
-        access_token=access_token,
+    provider = get_provider(refresh_owner)
+    if provider is None or not getattr(provider, "supports_session", True):
+        return None
+    try:
+        new_session = _refresh_session_with_prior_identity(
+            provider,
+            refresh_token=refresh_token,
+            access_token=access_token,
+        )
+    except AccessDeniedError as e:
+        e.provider = provider.name
+        raise
+    except RefreshExpiredError:
+        audit_log(
+            AuditEvent.REFRESH_FAILURE,
+            provider=provider.name,
+            reason="refresh_expired",
+            ip=_client_ip(request),
+        )
+        return None
+    except ProviderError as e:
+        _log.warning(
+            "dashboard-auth: provider %r unreachable during refresh: %s",
+            provider.name, e,
+        )
+        audit_log(
+            AuditEvent.REFRESH_FAILURE,
+            provider=provider.name,
+            reason="provider_unreachable",
+            ip=_client_ip(request),
+        )
+        raise ProviderError(provider.name) from e
+    _mark_identity_refreshed(
+        access_token,
+        expires_at=int(new_session.expires_at),
     )
-
-
-def _attempt_refresh_locked(
-    request: Request,
-    *,
-    providers,
-    refresh_token: str,
-    access_token: str,
-):
-    unavailable_provider: str | None = None
-    for provider in providers:
-        try:
-            new_session = _refresh_session_with_prior_identity(
-                provider,
-                refresh_token=refresh_token,
-                access_token=access_token,
-            )
-        except AccessDeniedError as e:
-            e.provider = provider.name
-            raise
-        except RefreshExpiredError:
-            audit_log(
-                AuditEvent.REFRESH_FAILURE,
-                provider=provider.name,
-                reason="refresh_expired",
-                ip=_client_ip(request),
-            )
-            continue
-        except ProviderError as e:
-            _log.warning(
-                "dashboard-auth: provider %r unreachable during refresh: %s",
-                provider.name, e,
-            )
-            audit_log(
-                AuditEvent.REFRESH_FAILURE,
-                provider=provider.name,
-                reason="provider_unreachable",
-                ip=_client_ip(request),
-            )
-            if unavailable_provider is None:
-                unavailable_provider = provider.name
-            continue
-        if new_session is not None:
-            _mark_identity_refreshed(
-                access_token,
-                expires_at=int(new_session.expires_at),
-            )
-            return new_session, provider.name
-    if unavailable_provider is not None:
-        raise ProviderError(unavailable_provider)
-    return None
+    return new_session, provider.name

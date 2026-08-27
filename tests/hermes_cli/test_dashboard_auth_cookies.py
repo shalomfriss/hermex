@@ -15,7 +15,6 @@ from hermes_cli.dashboard_auth.cookies import (
     clear_session_cookies,
     read_pkce_cookie,
     read_session_cookies,
-    read_session_provider,
     set_pkce_cookie,
     set_session_cookies,
 )
@@ -65,7 +64,10 @@ def test_session_cookies_use_host_prefix_on_https_direct():
     cookies = r.headers.get_list("set-cookie")
     at = next(c for c in cookies if c.startswith(f"__Host-{SESSION_AT_COOKIE}="))
     rt = next(c for c in cookies if c.startswith(f"__Host-{SESSION_RT_COOKIE}="))
-    provider = next(c for c in cookies if c.startswith(f"__Host-{SESSION_PROVIDER_COOKIE}=nous"))
+    provider = next(
+        c for c in cookies if c.startswith(f"__Host-{SESSION_PROVIDER_COOKIE}=")
+    )
+    assert "=nous" not in provider
     for c in (at, rt, provider):
         assert "HttpOnly" in c
         assert "samesite=lax" in c.lower()
