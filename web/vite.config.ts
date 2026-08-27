@@ -69,6 +69,19 @@ function hermesDevToken(): Plugin {
 }
 
 export default defineConfig({
+  experimental: {
+    // Lazy-route imports execute after index.html has injected the live
+    // reverse-proxy prefix. Keep those chunk URLs on that same public path;
+    // an absolute /assets/* import escapes /hermes and breaks deep links.
+    renderBuiltUrl(filename, { hostType }) {
+      if (hostType === "js") {
+        return {
+          runtime: `(window.__HERMES_BASE_PATH__ || "") + "/${filename}"`,
+        };
+      }
+      return { relative: false };
+    },
+  },
   plugins: [
     react(),
     babel({ presets: [compilerPreset()] }),
