@@ -239,13 +239,22 @@ def atomic_write_secure_bytes(path: Path, data: bytes, *, label: str) -> None:
         raise
 
 
-def acquire_secure_lock(path: Path, *, label: str):
-    """Open, verify, and exclusively lock one byte of a protected lock file."""
+def acquire_secure_lock(
+    path: Path,
+    *,
+    label: str,
+    exclusive: bool = True,
+    create: bool = True,
+):
+    """Open, verify, and lock one byte of a protected lock file."""
     _, pywintypes, _, win32con, win32file, _ = _win32()
+    access = win32con.GENERIC_READ | win32con.READ_CONTROL
+    if exclusive:
+        access |= win32con.GENERIC_WRITE
     handle = open_secure_file(
         path,
-        access=win32con.GENERIC_READ | win32con.GENERIC_WRITE | win32con.READ_CONTROL,
-        creation=win32con.OPEN_ALWAYS,
+        access=access,
+        creation=win32con.OPEN_ALWAYS if create else win32con.OPEN_EXISTING,
         flags=win32con.FILE_ATTRIBUTE_NORMAL,
         share=(
             win32con.FILE_SHARE_READ
@@ -258,7 +267,7 @@ def acquire_secure_lock(path: Path, *, label: str):
     try:
         win32file.LockFileEx(
             handle,
-            win32con.LOCKFILE_EXCLUSIVE_LOCK,
+            win32con.LOCKFILE_EXCLUSIVE_LOCK if exclusive else 0,
             1,
             0,
             overlapped,

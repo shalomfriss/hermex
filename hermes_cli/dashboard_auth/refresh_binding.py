@@ -56,8 +56,10 @@ def _lock_path() -> Path:
 class _StateLock:
     """Cross-process lock for keyring initialization and rotation."""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, exclusive: bool = True, create: bool = True):
         self.path = path
+        self.exclusive = exclusive
+        self.create = create
         self._handle = None
         self._overlapped = None
 
@@ -68,11 +70,15 @@ class _StateLock:
                 ensure_secure_directory,
             )
 
-            ensure_secure_directory(
-                self.path.parent, label="refresh-binding secret directory"
-            )
+            if self.create:
+                ensure_secure_directory(
+                    self.path.parent, label="refresh-binding secret directory"
+                )
             self._handle, self._overlapped = acquire_secure_lock(
-                self.path, label="refresh-binding lock"
+                self.path,
+                label="refresh-binding lock",
+                exclusive=self.exclusive,
+                create=self.create,
             )
             return self
 
@@ -167,11 +173,16 @@ def _parse_keyring(raw: Any) -> tuple[str, list[tuple[str, bytes]]] | None:
     return active, parsed
 
 
-def _read_keyring(path: Path) -> tuple[str, list[tuple[str, bytes]]] | None:
+def _read_keyring(
+    path: Path, *, acquire_lock: bool = True
+) -> tuple[str, list[tuple[str, bytes]]] | None:
     try:
         if os.name == "nt":
             from hermes_cli.windows_secure_files import read_secure_bytes
 
+            if acquire_lock:
+                with _StateLock(_lock_path(), exclusive=False, create=False):
+                    return _read_keyring(path, acquire_lock=False)
             raw = json.loads(
                 read_secure_bytes(
                     path,
@@ -236,7 +247,7 @@ def _load_or_create_keyring() -> tuple[str, list[tuple[str, bytes]]] | None:
             if path.is_symlink():
                 return None
             if path.exists():
-                return _read_keyring(path)
+                return _read_keyring(path, acquire_lock=False)
             keyring = _new_keyring()
             _write_keyring(path, keyring)
             return _parse_keyring(keyring)
@@ -258,7 +269,7 @@ def rotate_refresh_binding_key() -> bool:
             if not path.exists():
                 _write_keyring(path, _new_keyring())
                 return True
-            parsed = _read_keyring(path)
+            parsed = _read_keyring(path, acquire_lock=False)
             if parsed is None:
                 return False
             _active, keys = parsed
