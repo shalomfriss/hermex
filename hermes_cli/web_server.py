@@ -746,10 +746,13 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
 })
 
 
-def should_require_auth(host: str, allow_public: bool = False) -> bool:
+def should_require_auth(
+    host: str, allow_public: bool = False, *, force_auth: bool = False
+) -> bool:
     """Return True iff the dashboard auth gate must be active.
 
     Truth table:
+      force_auth              → True  (trusted loopback proxy/tunnel)
       host == loopback        → False (no auth — local-only, trusted operator)
       host != loopback        → True  (gate engages — OAuth or password required)
 
@@ -765,7 +768,7 @@ def should_require_auth(host: str, allow_public: bool = False) -> bool:
     MCP-persistence campaign, where ``--insecure --host 0.0.0.0`` left the
     config/MCP/agent surface open to internet scanners.
     """
-    return host not in _LOOPBACK_HOST_VALUES
+    return force_auth or host not in _LOOPBACK_HOST_VALUES
 
 
 def _is_accepted_host(host_header: str, bound_host: str) -> bool:
@@ -16321,6 +16324,41 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
         return f"origin_mismatch origin={origin} bound={bound_host}"
 
     if not _is_accepted_host(parsed.netloc, bound_host):
+        # A loopback-bound dashboard can deliberately keep the OAuth gate on
+        # behind a trusted local reverse proxy (``--require-auth``).  The
+        # browser's Origin is then the configured public HTTPS URL while the
+        # upstream Host remains loopback for DNS-rebinding protection.  Accept
+        # that one exact origin only from a configured immediate proxy peer.
+        import ipaddress
+
+        from hermes_cli.dashboard_auth.prefix import resolve_public_url
+
+        peer = ws.client.host if ws.client else ""
+        try:
+            peer_ip = ipaddress.ip_address(peer)
+            if isinstance(peer_ip, ipaddress.IPv6Address) and peer_ip.ipv4_mapped:
+                peer_ip = peer_ip.ipv4_mapped
+        except ValueError:
+            peer_ip = None
+        networks = tuple(
+            getattr(app.state, "dashboard_trusted_proxy_networks", ()) or ()
+        )
+        trusted_peer = bool(
+            peer_ip
+            and any(
+                peer_ip.version == network.version and peer_ip in network
+                for network in networks
+            )
+        )
+        public = urllib.parse.urlparse(resolve_public_url() or "")
+        if (
+            getattr(app.state, "auth_required", False)
+            and trusted_peer
+            and parsed.scheme == "https"
+            and parsed.netloc == public.netloc
+            and public.scheme == "https"
+        ):
+            return None
         return f"origin_mismatch origin={origin} bound={bound_host}"
     return None
 
@@ -19322,6 +19360,7 @@ def start_server(
     port: int = 9119,
     open_browser: bool = True,
     allow_public: bool = False,
+    require_auth: bool = False,
     initial_profile: str = "",
     headless: bool = False,
     ssh_session_token: Optional[str] = None,
@@ -19365,7 +19404,7 @@ def start_server(
     # injection / WS-auth paths can branch on it consistently.  Phase 3.5
     # uses this to decide whether to refuse the bind, log the gate-on
     # banner, and enable uvicorn proxy_headers.
-    app.state.auth_required = should_require_auth(host)
+    app.state.auth_required = should_require_auth(host, force_auth=require_auth)
 
     # Native pending codes and one-shot WS tickets are process-local. Validate
     # before binding so unsupported multi-worker or unverified multi-replica

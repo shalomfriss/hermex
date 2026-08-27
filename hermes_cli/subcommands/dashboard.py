@@ -30,6 +30,14 @@ def _add_server_runtime_args(parser) -> None:
         "--host", default="127.0.0.1", help="Host (default 127.0.0.1)"
     )
     parser.add_argument(
+        "--require-auth",
+        action="store_true",
+        help=(
+            "Require the configured dashboard auth provider even on a loopback "
+            "bind (for a trusted local reverse proxy or tunnel)."
+        ),
+    )
+    parser.add_argument(
         "--insecure",
         action="store_true",
         help=(

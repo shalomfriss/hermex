@@ -59,6 +59,12 @@ def test_should_require_auth_truth_table(host, allow_public, expected):
     assert should_require_auth(host, allow_public) is expected
 
 
+def test_should_require_auth_can_force_gate_on_loopback():
+    from hermes_cli.web_server import should_require_auth
+
+    assert should_require_auth("127.0.0.1", force_auth=True) is True
+
+
 def test_empty_provider_login_page_shows_supported_auth_paths():
     from hermes_cli.dashboard_auth import clear_providers
     from hermes_cli.dashboard_auth.login_page import render_login_html
@@ -151,6 +157,26 @@ def test_start_server_loopback_sets_auth_required_false(monkeypatch):
         open_browser=False, allow_public=False,
     )
     assert web_server.app.state.auth_required is False
+
+
+def test_start_server_loopback_can_require_auth_for_local_proxy(monkeypatch):
+    from hermes_cli.dashboard_auth import clear_providers, register_provider
+    from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+
+    clear_providers()
+    register_provider(StubAuthProvider())
+    _stub_uvicorn_run(monkeypatch)
+    try:
+        web_server.app.state.auth_required = None
+        web_server.start_server(
+            host="127.0.0.1",
+            port=9119,
+            open_browser=False,
+            require_auth=True,
+        )
+        assert web_server.app.state.auth_required is True
+    finally:
+        clear_providers()
 
 
 def test_start_server_insecure_public_no_longer_bypasses_gate(monkeypatch):
