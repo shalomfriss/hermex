@@ -15,11 +15,12 @@ without any external IDP.  Exercises:
 from __future__ import annotations
 
 import pytest
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from fastapi.testclient import TestClient
 
 from hermes_cli import web_server
-from hermes_cli.dashboard_auth import clear_providers, register_provider
+from hermes_cli.dashboard_auth import LoginStart, clear_providers, register_provider
 from hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 
@@ -156,6 +157,70 @@ def _complete_stub_login(client) -> None:
         follow_redirects=False,
     )
     assert r2.status_code == 302
+
+
+def test_callback_forwards_nonce_without_breaking_legacy_provider(gated_app):
+    class NonceAwareProvider(StubAuthProvider):
+        name = "nonce-aware"
+
+        def __init__(self):
+            super().__init__()
+            self.received_nonce = ""
+
+        def start_login(self, *, redirect_uri: str) -> LoginStart:
+            login = super().start_login(redirect_uri=redirect_uri)
+            parsed = urlparse(login.redirect_url)
+            query = parse_qs(parsed.query)
+            query["nonce"] = ["nonce-from-provider"]
+            redirect_url = urlunparse(
+                parsed._replace(query=urlencode(query, doseq=True))
+            )
+            payload = login.cookie_payload["hermes_session_pkce"]
+            return LoginStart(
+                redirect_url=redirect_url,
+                cookie_payload={
+                    "hermes_session_pkce": f"{payload};nonce=nonce-from-provider"
+                },
+            )
+
+        def complete_login(
+            self,
+            *,
+            code,
+            state,
+            code_verifier,
+            redirect_uri,
+            nonce="",
+        ):
+            self.received_nonce = nonce
+            return super().complete_login(
+                code=code,
+                state=state,
+                code_verifier=code_verifier,
+                redirect_uri=redirect_uri,
+            )
+
+    clear_providers()
+    provider = NonceAwareProvider()
+    register_provider(provider)
+
+    started = gated_app.get(
+        "/auth/login?provider=nonce-aware", follow_redirects=False
+    )
+    query = parse_qs(urlparse(started.headers["location"]).query)
+    completed = gated_app.get(
+        "/auth/callback",
+        params={"code": query["code"][0], "state": query["state"][0]},
+        follow_redirects=False,
+    )
+
+    assert completed.status_code == 302
+    assert provider.received_nonce == "nonce-from-provider"
+
+    # The original four-keyword provider remains a valid external contract.
+    clear_providers()
+    register_provider(StubAuthProvider())
+    _complete_stub_login(gated_app)
 
 
 def test_gated_require_token_endpoint_accepts_cookie_session(gated_app):

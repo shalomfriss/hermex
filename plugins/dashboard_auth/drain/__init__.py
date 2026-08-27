@@ -183,7 +183,13 @@ class DrainSecretProvider(DashboardAuthProvider):
         )
 
     def complete_login(
-        self, *, code: str, state: str, code_verifier: str, redirect_uri: str
+        self,
+        *,
+        code: str,
+        state: str,
+        code_verifier: str,
+        redirect_uri: str,
+        nonce: str = "",
     ) -> Session:
         raise NotImplementedError(
             "DrainSecretProvider is a non-interactive service credential."
