@@ -76,6 +76,33 @@ class TestLoadConfigDefaults:
             assert config["terminal"]["backend"] == "local"
             assert config["display"]["interim_assistant_messages"] is True
 
+    def test_self_hosted_oidc_defaults_are_discoverable(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = load_config()
+
+        self_hosted = config["dashboard"]["oauth"]["self_hosted"]
+        assert self_hosted == {
+            "issuer": "",
+            "client_id": "",
+            "scopes": "openid profile email",
+            "authorization": {
+                "require_email": False,
+                "require_verified_email": False,
+                "allowed_email_domains": [],
+                "groups_claim": "groups",
+                "required_groups": [],
+                "roles_claim": "realm_access.roles",
+                "required_roles": [],
+                "tenant_claim": "tid",
+                "allowed_tenants": [],
+                "acr_claim": "acr",
+                "allowed_acr_values": [],
+                "amr_claim": "amr",
+                "require_mfa": False,
+                "max_auth_age_seconds": 0,
+            },
+        }
+
     def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             config_path = tmp_path / "config.yaml"
