@@ -4810,15 +4810,18 @@ class TestHashedAssetCacheHeaders:
     _IMMUTABLE = "public, max-age=31536000, immutable"
 
     @staticmethod
-    def _client(tmp_path, monkeypatch):
+    def _client(tmp_path, monkeypatch, *, peer="127.0.0.1"):
         from fastapi import FastAPI
         from starlette.testclient import TestClient
         import hermes_cli.web_server as ws
+        from hermes_cli.dashboard_auth.client_ip import parse_trusted_proxy_networks
 
         dist = tmp_path / "web_dist"
         (dist / "assets").mkdir(parents=True)
         (dist / "index.html").write_text(
-            "<html><head></head><body>SPA</body></html>", encoding="utf-8"
+            '<html><head><link href="/assets/index-abc123.css"></head>'
+            "<body>SPA</body></html>",
+            encoding="utf-8",
         )
         (dist / "assets" / "index-abc123.js").write_text(
             "console.log('bundle');", encoding="utf-8"
@@ -4831,8 +4834,11 @@ class TestHashedAssetCacheHeaders:
         monkeypatch.setattr(ws, "WEB_DIST", dist)
         monkeypatch.delenv("HERMES_SERVE_HEADLESS", raising=False)
         spa_app = FastAPI()
+        spa_app.state.dashboard_trusted_proxy_networks = parse_trusted_proxy_networks(
+            ["127.0.0.1"]
+        )
         ws.mount_spa(spa_app)
-        return TestClient(spa_app)
+        return TestClient(spa_app, client=(peer, 42000))
 
     def test_hashed_js_asset_is_immutable(self, tmp_path, monkeypatch):
         client = self._client(tmp_path, monkeypatch)
@@ -4858,6 +4864,34 @@ class TestHashedAssetCacheHeaders:
         assert prefixed.headers["cache-control"] == self._IMMUTABLE
         assert "url(/hermes/ds-assets/bg.png)" in prefixed.text
         assert "url(/hermes/fonts-terminal/x.woff2)" in prefixed.text
+
+    def test_spa_prefix_bootstrap_covers_static_api_and_websocket_urls(
+        self, tmp_path, monkeypatch
+    ):
+        client = self._client(tmp_path, monkeypatch)
+
+        response = client.get("/chat", headers={"X-Forwarded-Prefix": "/hermes"})
+
+        assert response.status_code == 200
+        assert 'href="/hermes/assets/index-abc123.css"' in response.text
+        # The frontend's HTTP and WebSocket URL builders both consume this
+        # bootstrap value, so /api/* and /api/{pty,ws,...} stay in scope.
+        assert 'window.__HERMES_BASE_PATH__="/hermes"' in response.text
+
+    def test_untrusted_peer_cannot_rewrite_spa_or_static_asset_urls(
+        self, tmp_path, monkeypatch
+    ):
+        client = self._client(tmp_path, monkeypatch, peer="198.51.100.9")
+
+        index = client.get("/chat", headers={"X-Forwarded-Prefix": "/hermes"})
+        css = client.get(
+            "/assets/index-abc123.css",
+            headers={"X-Forwarded-Prefix": "/hermes"},
+        )
+
+        assert 'window.__HERMES_BASE_PATH__=""' in index.text
+        assert 'href="/assets/index-abc123.css"' in index.text
+        assert "/hermes/" not in css.text
 
     def test_index_html_stays_no_store(self, tmp_path, monkeypatch):
         client = self._client(tmp_path, monkeypatch)

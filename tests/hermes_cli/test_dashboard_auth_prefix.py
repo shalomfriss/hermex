@@ -31,14 +31,17 @@ those rules surfaces before a Mission Control deploy.
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 
 import pytest
 
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 from hermes_cli import web_server
 from hermes_cli.dashboard_auth import clear_providers, register_provider
 from hermes_cli.dashboard_auth import prefix as prefix_mod
+from hermes_cli.dashboard_auth.client_ip import parse_trusted_proxy_networks
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 
 
@@ -63,18 +66,26 @@ def gated_app_proxied():
     prev_host = getattr(web_server.app.state, "bound_host", None)
     prev_port = getattr(web_server.app.state, "bound_port", None)
     prev_required = getattr(web_server.app.state, "auth_required", None)
+    prev_trusted = getattr(
+        web_server.app.state, "dashboard_trusted_proxy_networks", None
+    )
     web_server.app.state.bound_host = "mission-control.tilos.com"
     web_server.app.state.bound_port = 443
     web_server.app.state.auth_required = True
+    web_server.app.state.dashboard_trusted_proxy_networks = (
+        parse_trusted_proxy_networks(["127.0.0.1", "10.0.0.0/8"])
+    )
     client = TestClient(
         web_server.app,
         base_url="https://mission-control.tilos.com",
+        client=("127.0.0.1", 42000),
     )
     yield client
     clear_providers()
     web_server.app.state.bound_host = prev_host
     web_server.app.state.bound_port = prev_port
     web_server.app.state.auth_required = prev_required
+    web_server.app.state.dashboard_trusted_proxy_networks = prev_trusted
 
 
 @pytest.fixture
@@ -87,18 +98,55 @@ def gated_app_direct():
     prev_host = getattr(web_server.app.state, "bound_host", None)
     prev_port = getattr(web_server.app.state, "bound_port", None)
     prev_required = getattr(web_server.app.state, "auth_required", None)
+    prev_trusted = getattr(
+        web_server.app.state, "dashboard_trusted_proxy_networks", None
+    )
     web_server.app.state.bound_host = "fly-app.fly.dev"
     web_server.app.state.bound_port = 443
     web_server.app.state.auth_required = True
+    web_server.app.state.dashboard_trusted_proxy_networks = (
+        parse_trusted_proxy_networks(["127.0.0.1"])
+    )
     client = TestClient(
         web_server.app,
         base_url="https://fly-app.fly.dev",
+        client=("198.51.100.9", 42000),
     )
     yield client
     clear_providers()
     web_server.app.state.bound_host = prev_host
     web_server.app.state.bound_port = prev_port
     web_server.app.state.auth_required = prev_required
+    web_server.app.state.dashboard_trusted_proxy_networks = prev_trusted
+
+
+def _prefix_request(
+    peer: str,
+    *,
+    prefixes: tuple[str, ...] = (),
+    forwarded_for: str = "",
+    trusted_proxies: tuple = (),
+) -> Request:
+    headers = [(b"x-forwarded-prefix", value.encode("latin-1")) for value in prefixes]
+    if forwarded_for:
+        headers.append((b"x-forwarded-for", forwarded_for.encode("ascii")))
+    app = SimpleNamespace(
+        state=SimpleNamespace(dashboard_trusted_proxy_networks=trusted_proxies)
+    )
+    return Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "scheme": "https",
+            "path": "/sessions",
+            "raw_path": b"/sessions",
+            "query_string": b"",
+            "headers": headers,
+            "client": (peer, 42000),
+            "server": ("dashboard.example", 443),
+            "app": app,
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +155,55 @@ def gated_app_direct():
 
 
 class TestForwardedPrefixNormalisation:
+    def test_untrusted_direct_peer_cannot_supply_forwarded_prefix(self):
+        request = _prefix_request("198.51.100.9", prefixes=("/hermes",))
+
+        assert prefix_mod.prefix_from_request(request) == ""
+
+    def test_trusted_single_and_multi_proxy_deployments_accept_one_prefix(self):
+        trusted = parse_trusted_proxy_networks(["10.0.0.0/8"])
+        single = _prefix_request(
+            "10.0.0.3",
+            prefixes=("/hermes",),
+            forwarded_for="203.0.113.44",
+            trusted_proxies=trusted,
+        )
+        multi = _prefix_request(
+            "10.0.0.3",
+            prefixes=("/hermes",),
+            forwarded_for="203.0.113.44, 10.0.0.1, 10.0.0.2",
+            trusted_proxies=trusted,
+        )
+
+        assert prefix_mod.prefix_from_request(single) == "/hermes"
+        assert prefix_mod.prefix_from_request(multi) == "/hermes"
+
+    @pytest.mark.parametrize(
+        "prefixes",
+        [
+            ("/hermes", "/admin"),
+            ("/hermes,/admin",),
+            ("hermes",),
+            ("//evil.example",),
+            ("/%2f%2fevil.example",),
+            ("/hermes%2fadmin",),
+            ("/hermes\\admin",),
+            ("/hermes?next=//evil.example",),
+            ("/hermes#fragment",),
+            ("/./admin",),
+            ("/hermes/../admin",),
+            ("/caf\N{LATIN SMALL LETTER E WITH ACUTE}",),
+        ],
+    )
+    def test_ambiguous_encoded_or_path_confusing_prefix_is_rejected(self, prefixes):
+        request = _prefix_request(
+            "10.0.0.3",
+            prefixes=prefixes,
+            trusted_proxies=parse_trusted_proxy_networks(["10.0.0.0/8"]),
+        )
+
+        assert prefix_mod.prefix_from_request(request) == ""
+
     def test_home_assistant_ingress_prefix_with_subpath_is_accepted(
         self, caplog
     ):
@@ -145,7 +242,17 @@ class TestForwardedPrefixNormalisation:
             and "X-Forwarded-Prefix" in r.getMessage()
         ]
         assert len(warnings) == 1
-        assert "longer than 256 characters" in warnings[0].getMessage()
+        assert "longer than 256 bytes" in warnings[0].getMessage()
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            (" " * 300) + "/hermes",
+            "/hermes" + ("/" * 300),
+        ],
+    )
+    def test_oversized_raw_value_cannot_shrink_into_an_accepted_prefix(self, raw):
+        assert prefix_mod.normalise_prefix(raw) == ""
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +261,50 @@ class TestForwardedPrefixNormalisation:
 
 
 class TestGateRedirectsCarryPrefix:
+    def test_direct_spoof_cannot_change_redirect_or_cookie_scope(
+        self, gated_app_direct
+    ):
+        redirect = gated_app_direct.get(
+            "/sessions",
+            headers={"x-forwarded-prefix": "/hermes"},
+            follow_redirects=False,
+        )
+        login = gated_app_direct.get(
+            "/auth/login?provider=stub",
+            headers={"x-forwarded-prefix": "/hermes"},
+            follow_redirects=False,
+        )
+
+        assert redirect.headers["location"].startswith("/auth/login")
+        assert not redirect.headers["location"].startswith("/hermes/")
+        pkce = next(
+            cookie
+            for cookie in login.headers.get_list("set-cookie")
+            if "hermes_session_pkce" in cookie
+        )
+        assert pkce.startswith("__Host-hermes_session_pkce=")
+        assert "Path=/;" in pkce
+        assert "Path=/hermes" not in pkce
+
+    def test_logout_redirect_and_cookie_deletions_use_trusted_prefix(
+        self, gated_app_proxied
+    ):
+        response = gated_app_proxied.post(
+            "/auth/logout",
+            headers={"x-forwarded-prefix": "/hermes"},
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 302
+        assert response.headers["location"] == "/hermes/login"
+        prefixed_deletions = [
+            cookie
+            for cookie in response.headers.get_list("set-cookie")
+            if cookie.startswith("__Secure-")
+        ]
+        assert prefixed_deletions
+        assert all("Path=/hermes" in cookie for cookie in prefixed_deletions)
+
     def test_login_document_uses_prefix_for_every_local_resource_and_action(
         self, gated_app_proxied
     ):

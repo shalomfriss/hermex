@@ -128,7 +128,13 @@ class AcceptanceProxy:
             return
 
         forwarded: Scope = dict(scope)
-        headers = list(forwarded.get("headers", []))
+        # Model a real trust boundary: discard caller-supplied prefix metadata
+        # before setting the canonical external mount path.
+        headers = [
+            (name, value)
+            for name, value in forwarded.get("headers", [])
+            if name.lower() != b"x-forwarded-prefix"
+        ]
         if path == "/hermes" or path.startswith("/hermes/"):
             stripped = path[len("/hermes") :] or "/"
             forwarded["path"] = stripped
@@ -185,6 +191,11 @@ def main() -> None:
     web_server.app.state.auth_required = True
     web_server.app.state.bound_host = "127.0.0.1"
     web_server.app.state.bound_port = args.port
+    from hermes_cli.dashboard_auth.client_ip import parse_trusted_proxy_networks
+
+    web_server.app.state.dashboard_trusted_proxy_networks = (
+        parse_trusted_proxy_networks(["127.0.0.1", "::1"])
+    )
 
     import uvicorn
 

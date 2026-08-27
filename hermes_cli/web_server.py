@@ -17608,16 +17608,17 @@ async def events_ws(ws: WebSocket) -> None:
                     event_channels.pop(channel, None)
 
 
-def _normalise_prefix(raw: Optional[str]) -> str:
-    """Normalise an X-Forwarded-Prefix header value.
+def _prefix_from_request(request: Request) -> str:
+    """Resolve a trusted X-Forwarded-Prefix for an active request.
 
-    Thin re-export of :func:`hermes_cli.dashboard_auth.prefix.normalise_prefix`
+    Thin re-export of :func:`hermes_cli.dashboard_auth.prefix.prefix_from_request`
     — the single source of truth lives in the dashboard_auth package so
     the gate middleware, the OAuth routes, the cookie helpers, and the
     SPA mount all agree on validation rules.
     """
-    from hermes_cli.dashboard_auth.prefix import normalise_prefix
-    return normalise_prefix(raw)
+    from hermes_cli.dashboard_auth.prefix import prefix_from_request
+
+    return prefix_from_request(request)
 
 
 def _render_active_theme_bootstrap_css() -> str:
@@ -17814,7 +17815,7 @@ def mount_spa(application: FastAPI):
             WEB_DIST.resolve()
         ):
             return JSONResponse({"error": "not found"}, status_code=404)
-        prefix = _normalise_prefix(request.headers.get("x-forwarded-prefix"))
+        prefix = _prefix_from_request(request)
         css = css_path.read_text(encoding="utf-8")
         if prefix:
             for asset_dir in ("/fonts/", "/fonts-terminal/", "/ds-assets/", "/assets/"):
@@ -17850,7 +17851,7 @@ def mount_spa(application: FastAPI):
 
     @application.get("/{full_path:path}")
     async def serve_spa(full_path: str, request: Request):
-        prefix = _normalise_prefix(request.headers.get("x-forwarded-prefix"))
+        prefix = _prefix_from_request(request)
         # An unmatched /api/* path is a missing/renamed endpoint, NOT a
         # client-side route. Falling through to index.html here returns
         # `<!doctype html>` with status 200, which makes JSON clients (the

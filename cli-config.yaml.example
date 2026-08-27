@@ -1817,8 +1817,10 @@ updates:
 #   # is IGNORED on this code path because the operator has explicitly
 #   # declared the public URL and we no longer need to guess.
 #   #
-#   # Leave empty to use the existing proxy-header reconstruction (the
-#   # default — works on Fly.io out of the box).
+#   # Leave empty to use proxy-header reconstruction. Forwarded scheme and
+#   # prefix values are accepted only from an immediate peer listed under
+#   # dashboard.trusted_proxies (loopback by default); direct callers and
+#   # malformed/duplicate/encoded prefix values fall back to root scope.
 #   #
 #   #   public_url: "https://example.com/hermes"
 #
