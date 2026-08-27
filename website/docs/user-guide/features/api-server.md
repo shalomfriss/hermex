@@ -423,6 +423,22 @@ model, disk space, gateway/platform state, active API runs, pending process
 completions, and active delegations. The response exposes status and counts,
 not config values, credentials, paths, commands, queue payloads, or raw errors.
 
+The disk check requires at least 1 GiB free on the volume containing the active
+profile by default. Set a larger deployment-specific reservation in
+`config.yaml`; for example, enterprise staging that builds the frontend and
+runs a disposable OIDC provider can reserve 10 GiB:
+
+```yaml
+readiness:
+  disk_min_free_gb: 10
+```
+
+Below the configured threshold, `readiness.checks.disk.status` and the
+top-level `status` are `degraded`; the disk check also reports `free_bytes`,
+`minimum_free_bytes`, and `pressure` so monitors can alert with measured
+headroom. Alert on any non-`ok` top-level status and resolve the alert only
+after the disk pressure returns to `ok`.
+
 The public `/health` route remains a cheap liveness probe and does not run
 readiness checks. A degraded readiness result still uses HTTP 200; inspect the
 top-level `status` and `readiness.checks` fields.

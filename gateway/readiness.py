@@ -10,10 +10,15 @@ from typing import Any
 
 import yaml
 
+from gateway.disk_status import classify_disk_pressure
+from hermes_cli.config_defaults import DEFAULT_CONFIG
 from hermes_constants import get_hermes_home
 
 
 _DISK_DEGRADED_PERCENT = 90.0
+_BYTES_PER_MB = 1024 * 1024
+_BYTES_PER_GB = 1024 * 1024 * 1024
+_DEFAULT_DISK_MIN_FREE_GB = float(DEFAULT_CONFIG["readiness"]["disk_min_free_gb"])
 
 
 def _check(status: str, detail: str | None = None, **extra: Any) -> dict[str, Any]:
@@ -58,12 +63,40 @@ def _probe_config(home: Path) -> dict[str, Any]:
         return _check("degraded", f"invalid config ({type(exc).__name__})")
 
 
+def _disk_min_free_bytes(home: Path) -> int:
+    """Resolve the absolute readiness floor from config.yaml, fail-safe."""
+    value: Any = _DEFAULT_DISK_MIN_FREE_GB
+    try:
+        raw = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8")) or {}
+        readiness = raw.get("readiness") if isinstance(raw, dict) else None
+        if isinstance(readiness, dict):
+            value = readiness.get("disk_min_free_gb", value)
+    except Exception:
+        pass
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        value = _DEFAULT_DISK_MIN_FREE_GB
+    return int(float(value) * _BYTES_PER_GB)
+
+
 def _probe_disk(home: Path) -> dict[str, Any]:
     try:
         usage = shutil.disk_usage(home)
         used_pct = round((usage.used / usage.total) * 100, 1) if usage.total else 0.0
-        status = "degraded" if used_pct >= _DISK_DEGRADED_PERCENT else "ok"
-        return _check(status, used_percent=used_pct, free_bytes=usage.free)
+        minimum_free = _disk_min_free_bytes(home)
+        degraded = used_pct >= _DISK_DEGRADED_PERCENT or usage.free < minimum_free
+        pressure = classify_disk_pressure(
+            usage.free // _BYTES_PER_MB,
+            usage.total // _BYTES_PER_MB,
+        )
+        if degraded and pressure == "ok":
+            pressure = "elevated"
+        return _check(
+            "degraded" if degraded else "ok",
+            used_percent=used_pct,
+            free_bytes=usage.free,
+            minimum_free_bytes=minimum_free,
+            pressure=pressure,
+        )
     except Exception as exc:
         return _check("degraded", type(exc).__name__)
 

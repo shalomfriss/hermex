@@ -2907,6 +2907,13 @@ DEFAULT_CONFIG = {
         "force_ipv4": False,
     },
 
+    # Authenticated runtime readiness. The generic default is deliberately
+    # conservative; deployments with larger build/runtime reservations can
+    # raise it without redefining public disk-pressure semantics.
+    "readiness": {
+        "disk_min_free_gb": 1,
+    },
+
     # Gateway monitoring — Service Health Monitoring plus redacted Operational
     # Diagnostics for the gateway daemon, exported over OTLP to an
     # operator-configured endpoint (OTEL Collector, DataDog, ...). Content-free
