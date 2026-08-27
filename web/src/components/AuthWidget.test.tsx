@@ -52,6 +52,8 @@ describe("AuthWidget enterprise authorization states", () => {
           display_name: "Alice Example",
           org_id: "tenant-a",
           provider: "self-hosted",
+          provider_display_name: "Company SSO",
+          organization_label: "Acme Mental Health",
           expires_at: 2_000_000_000,
         }),
       ),
@@ -60,7 +62,8 @@ describe("AuthWidget enterprise authorization states", () => {
     await renderWidget();
 
     expect(container.textContent).toContain("Alice Example");
-    expect(container.textContent).toContain("via self-hosted");
+    expect(container.textContent).toContain("via Company SSO");
+    expect(container.textContent).toContain("Acme Mental Health");
   });
 
   it("renders a generic authorization failure for structured 403 responses", async () => {
@@ -80,5 +83,27 @@ describe("AuthWidget enterprise authorization states", () => {
       "Your account is not authorized for this dashboard",
     );
     expect(container.textContent).not.toContain("group_required");
+  });
+
+  it("does not disclose an opaque user id when friendly claims are absent", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse(200, {
+          email: "",
+          display_name: "",
+          org_id: "tenant-a",
+          provider: "self-hosted",
+          provider_display_name: "Company SSO",
+          organization_label: "Acme",
+          expires_at: 2_000_000_000,
+        }),
+      ),
+    );
+
+    await renderWidget();
+
+    expect(container.textContent).toContain("Signed-in account");
+    expect(container.textContent).not.toContain("user-");
   });
 });

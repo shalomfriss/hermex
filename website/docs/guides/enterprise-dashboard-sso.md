@@ -65,9 +65,11 @@ Use `dashboard.oauth.self_hosted` in `$HERMES_HOME/config.yaml`:
 ```yaml
 dashboard:
   public_url: "https://hermes.example.com"
+  organization_label: "Example Health"
   oauth:
     provider: self-hosted
     self_hosted:
+      display_name: "Example Workforce SSO"
       issuer: "https://idp.example.com/oauth2/default"
       client_id: "hermes-dashboard"
       scopes: "openid profile email groups offline_access"
@@ -102,6 +104,11 @@ export HERMES_DASHBOARD_OIDC_CLIENT_ID='hermes-dashboard'
 ```
 
 Behavioral policy belongs in `config.yaml`; environment variables are deployment overrides, not the canonical policy surface.
+
+`dashboard.organization_label` and `dashboard.oauth.self_hosted.display_name`
+are optional presentation labels for the authenticated sidebar and sign-in UX.
+Use friendly public names; Hermes never substitutes opaque subject or tenant IDs
+when either label is absent.
 
 ### Admission-policy semantics
 

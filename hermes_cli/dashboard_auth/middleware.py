@@ -17,6 +17,7 @@ binds.
 from __future__ import annotations
 
 import logging
+import secrets
 from typing import Awaitable, Callable
 
 from fastapi import Request
@@ -179,14 +180,34 @@ def access_denied_response(
         ip=_client_ip(request),
     )
     detail = "Your account is not authorized for this dashboard."
+    reference_id = f"AUTH-{secrets.token_hex(4).upper()}"
     path = request.url.path
     if path.startswith("/api/") or path.startswith("/auth/native/"):
         response: Response = JSONResponse(
-            {"error": "access_denied", "detail": detail}, status_code=403
+            {
+                "error": "access_denied",
+                "detail": detail,
+                "reference_id": reference_id,
+            },
+            status_code=403,
         )
     else:
         response = HTMLResponse(
-            f"<!doctype html><title>Access denied</title><h1>{detail}</h1>",
+            f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Access denied — Hermes Agent</title>
+<style>
+html,body{{min-height:100%;margin:0;background:#170d02;color:#fff;font:16px/1.6 system-ui,sans-serif}}
+body{{display:grid;place-items:center;padding:1.25rem;box-sizing:border-box}}
+main{{max-width:36rem;border:1px solid #ffac02;padding:clamp(1.5rem,6vw,3rem)}}
+h1{{font-size:clamp(2rem,8vw,3rem);line-height:1.1;margin:0 0 1rem;color:#ffbf3f}}
+.ref{{font-family:ui-monospace,monospace;color:#ffd98a;margin-top:1.5rem}}
+</style></head><body><main role="alert" aria-live="assertive">
+<h1>Access denied</h1><p>{detail}</p>
+<p>Contact your organization’s administrator if you believe this is an error.</p>
+<p class="ref">Support reference: {reference_id}</p>
+</main></body></html>""",
             status_code=403,
         )
     if clear_cookies:
@@ -195,6 +216,46 @@ def access_denied_response(
 
         clear_session_cookies(response, prefix=prefix_from_request(request))
     return response
+
+
+def provider_outage_response(request: Request, provider: str) -> Response:
+    """Return a retryable outage without exposing provider internals."""
+    reference_id = f"AUTH-{secrets.token_hex(4).upper()}"
+    _log.warning(
+        "dashboard-auth: provider %r unavailable (reference %s)",
+        provider,
+        reference_id,
+    )
+    detail = "The sign-in provider is temporarily unavailable."
+    path = request.url.path
+    if (
+        path.startswith("/api/")
+        or path.startswith("/auth/native/")
+        or path == "/auth/password-login"
+    ):
+        return JSONResponse(
+            {
+                "error": "provider_unavailable",
+                "detail": detail,
+                "reference_id": reference_id,
+                "retryable": True,
+            },
+            status_code=503,
+        )
+    from hermes_cli.dashboard_auth.prefix import prefix_from_request
+
+    retry_url = f"{prefix_from_request(request)}/login"
+    return HTMLResponse(
+        f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sign-in temporarily unavailable — Hermes Agent</title>
+<style>html,body{{min-height:100%;margin:0;background:#170d02;color:#fff;font:16px/1.6 system-ui,sans-serif}}body{{display:grid;place-items:center;padding:1.25rem}}main{{max-width:36rem;border:1px solid #ffac02;padding:clamp(1.5rem,6vw,3rem)}}h1,a{{color:#ffbf3f}}a{{display:inline-block;min-height:44px;padding:.75rem 1rem;border:2px solid currentColor;font-weight:700}}.ref{{font-family:ui-monospace,monospace;color:#ffd98a}}</style>
+</head><body><main role="alert" aria-live="assertive"><h1>Sign-in temporarily unavailable</h1>
+<p>{detail} Your existing session has not been cleared.</p>
+<p><a href="{retry_url}">Retry sign-in</a></p>
+<p class="ref">Support reference: {reference_id}</p></main></body></html>""",
+        status_code=503,
+    )
 
 
 def _auto_sso_response(request: Request) -> Response | None:
@@ -410,10 +471,7 @@ async def gated_auth_middleware(
         except ProviderError as e:
             # At least one provider's IDP/JWKS was unreachable and none
             # verified the token — transient outage, not bad credentials.
-            return JSONResponse(
-                {"detail": f"Auth provider {str(e)!r} unreachable"},
-                status_code=503,
-            )
+            return provider_outage_response(request, str(e))
         if bearer_session is not None:
             request.state.session = bearer_session
             return await call_next(request)
@@ -499,10 +557,7 @@ async def gated_auth_middleware(
             # No provider could verify the token and at least one couldn't be
             # reached — treat as a transient outage rather than forcing a
             # re-login through a (possibly also-unreachable) refresh.
-            return JSONResponse(
-                {"detail": f"Auth provider {unreachable_provider!r} unreachable"},
-                status_code=503,
-            )
+            return provider_outage_response(request, unreachable_provider)
 
     if session is None:
         # Access token is expired/invalid. Before forcing re-login, try to
@@ -524,10 +579,7 @@ async def gated_auth_middleware(
             # At least one provider could not confirm or reject the RT, and no
             # other provider refreshed it. Preserve the cookies and surface a
             # transient outage instead of turning uncertainty into a logout.
-            return JSONResponse(
-                {"detail": f"Auth provider {str(e)!r} unreachable"},
-                status_code=503,
-            )
+            return provider_outage_response(request, str(e))
         if refreshed is not None:
             new_session, refreshing_provider = refreshed
             request.state.session = new_session

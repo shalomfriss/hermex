@@ -343,7 +343,9 @@ def test_refresh_group_removal_denies_and_provider_outage_is_503(oidc_app):
         },
     )
     assert outage.status_code == 503
-    assert "unreachable" in outage.text.lower()
+    assert outage.json()["error"] == "provider_unavailable"
+    assert outage.json()["retryable"] is True
+    assert outage.json()["reference_id"].startswith("AUTH-")
 
 
 def test_real_http_desktop_native_flow_is_cookie_free(oidc_app):

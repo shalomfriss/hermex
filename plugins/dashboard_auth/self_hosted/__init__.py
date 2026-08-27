@@ -183,6 +183,7 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         *,
         issuer: str,
         client_id: str,
+        display_name: str = "Self-Hosted OIDC",
         scopes: str = _DEFAULT_SCOPES,
         client_secret: str = "",
         authorization: Dict[str, Any] | None = None,
@@ -199,6 +200,8 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         self._issuer = issuer.rstrip("/")
         _require_https_or_loopback(self._issuer, field="issuer")
         self._client_id = client_id
+        friendly_name = (display_name or "").strip()
+        self.display_name = friendly_name[:80] or type(self).display_name
         self._scopes = scopes.strip() or _DEFAULT_SCOPES
         # An empty/whitespace secret means "public client" — strip so a
         # provisioned-but-blank secret can't flip us into a broken confidential
@@ -898,6 +901,7 @@ def register(ctx) -> None:
     client_id = _resolve_setting(
         "HERMES_DASHBOARD_OIDC_CLIENT_ID", oidc_cfg.get("client_id")
     )
+    display_name = str(oidc_cfg.get("display_name", "") or "").strip()
     scopes = (
         _resolve_setting("HERMES_DASHBOARD_OIDC_SCOPES", oidc_cfg.get("scopes"))
         or _DEFAULT_SCOPES
@@ -927,6 +931,7 @@ def register(ctx) -> None:
         provider = SelfHostedOIDCProvider(
             issuer=issuer,
             client_id=client_id,
+            display_name=display_name or "Self-Hosted OIDC",
             scopes=scopes,
             client_secret=client_secret,
             authorization=authorization,
