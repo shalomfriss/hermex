@@ -48,6 +48,7 @@ from fastapi.responses import JSONResponse, Response
 from hermes_cli.dashboard_auth import list_token_providers
 from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
 from hermes_cli.dashboard_auth.base import ProviderError, TokenPrincipal
+from hermes_cli.dashboard_auth.client_ip import client_ip
 
 _log = logging.getLogger(__name__)
 
@@ -81,10 +82,8 @@ def clear_token_routes() -> None:
 
 
 def _client_ip(request: Request) -> str:
-    fwd = request.headers.get("x-forwarded-for", "")
-    if fwd:
-        return fwd.split(",")[0].strip()
-    return request.client.host if request.client else ""
+    """Compatibility alias for the shared trusted-proxy resolver."""
+    return client_ip(request)
 
 
 def extract_bearer_token(request: Request) -> str:

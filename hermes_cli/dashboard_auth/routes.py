@@ -48,6 +48,7 @@ from hermes_cli.dashboard_auth.cookies import (
     set_pkce_cookie,
     set_session_cookies,
 )
+from hermes_cli.dashboard_auth.client_ip import client_ip
 from hermes_cli.dashboard_auth.login_page import render_login_html
 from hermes_cli.dashboard_auth.middleware import access_denied_response
 
@@ -109,10 +110,8 @@ def _redirect_uri(request: Request) -> str:
 
 
 def _client_ip(request: Request) -> str:
-    fwd = request.headers.get("x-forwarded-for", "")
-    if fwd:
-        return fwd.split(",")[0].strip()
-    return request.client.host if request.client else ""
+    """Compatibility alias for the shared trusted-proxy resolver."""
+    return client_ip(request)
 
 
 def _prefix(request: Request) -> str:

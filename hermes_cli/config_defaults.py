@@ -1571,6 +1571,11 @@ DEFAULT_CONFIG = {
         # Set this to True to re-enable the surfaces with the understanding
         # that the numbers are a local lower-bound estimate, not billing.
         "show_token_analytics": False,
+        # Reverse proxies whose append-style X-Forwarded-For chains may affect
+        # auth throttling and audit attribution. Entries are IP literals or
+        # CIDRs. Only loopback proxies are trusted by default, matching
+        # uvicorn's historical boundary; add ingress networks explicitly.
+        "trusted_proxies": ["127.0.0.1", "::1"],
         # WebSocket keepalive for the dashboard/desktop web server (#79635).
         # Applied to NON-loopback binds only: loopback always disables the
         # protocol ping (see hermes_cli/web_server.py — an event-loop stall
