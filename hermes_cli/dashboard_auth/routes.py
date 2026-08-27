@@ -1082,14 +1082,51 @@ async def api_auth_ws_ticket(request: Request):
 
     # Import here so the routes module stays usable in test contexts that
     # don't load the ticket store.
-    from hermes_cli.dashboard_auth.ws_tickets import TTL_SECONDS, mint_ticket
+    from hermes_cli.dashboard_auth.ws_tickets import (
+        TTL_SECONDS,
+        TicketCapacityExceeded,
+        TicketRateLimited,
+        mint_ticket,
+    )
 
-    ticket = mint_ticket(user_id=sess.user_id, provider=sess.provider)
+    ip = _client_ip(request)
+    try:
+        ticket = mint_ticket(
+            user_id=sess.user_id,
+            provider=sess.provider,
+            client_ip=ip,
+        )
+    except TicketRateLimited as exc:
+        audit_log(
+            AuditEvent.WS_TICKET_REJECTED,
+            provider=sess.provider,
+            user_id=sess.user_id,
+            reason="issuance_rate_limited",
+            ip=ip,
+        )
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Too many WebSocket connection attempts."},
+            headers={"Retry-After": str(exc.retry_after)},
+        )
+    except TicketCapacityExceeded:
+        audit_log(
+            AuditEvent.WS_TICKET_REJECTED,
+            provider=sess.provider,
+            user_id=sess.user_id,
+            reason="store_at_capacity",
+            ip=ip,
+        )
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "WebSocket authorization is temporarily unavailable."},
+            headers={"Retry-After": str(TTL_SECONDS)},
+        )
     audit_log(
         AuditEvent.WS_TICKET_MINTED,
         provider=sess.provider,
         user_id=sess.user_id,
-        ip=_client_ip(request),
+        ip=ip,
     )
     return {"ticket": ticket, "ttl_seconds": TTL_SECONDS}
 
