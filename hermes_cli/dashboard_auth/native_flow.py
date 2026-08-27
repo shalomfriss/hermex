@@ -234,6 +234,17 @@ def get_pending(broker_state: str, *, now: Optional[int] = None) -> _Pending:
         return entry
 
 
+def reject_pending(broker_state: str, *, now: Optional[int] = None) -> _Pending:
+    """Consume and return a denied pending native authorization."""
+    now = int(time.time()) if now is None else now
+    with _lock:
+        _gc_locked(now)
+        pending = _pending.pop(broker_state, None)
+        if pending is None:
+            raise PendingNotFound("unknown or expired native authorization")
+        return pending
+
+
 def complete_pending(
     broker_state: str,
     *,

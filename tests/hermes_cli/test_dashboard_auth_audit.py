@@ -46,13 +46,21 @@ def test_audit_writes_jsonlines(profile_home):
 
 def test_audit_redacts_token_like_fields(profile_home):
     audit_log(
-        AuditEvent.LOGIN_SUCCESS,
+        AuditEvent.ACCESS_DENIED,
         provider="nous", access_token="should-not-appear",
         refresh_token="also-not", code="not-this", state="nope",
+        nonce="not-a-nonce", raw_claims="not-claims",
+        client_secret="not-a-secret", reason="group_required",
     )
     raw = (profile_home / "logs" / "dashboard-auth.log").read_text()
-    for forbidden in ("should-not-appear", "also-not", "not-this", "nope"):
+    for forbidden in (
+        "should-not-appear", "also-not", "not-this", "nope",
+        "not-a-nonce", "not-claims", "not-a-secret",
+    ):
         assert forbidden not in raw, f"token-like value leaked into audit log: {forbidden}"
+    entry = json.loads(raw)
+    assert entry["event"] == "access_denied"
+    assert entry["reason"] == "group_required"
 
 
 
