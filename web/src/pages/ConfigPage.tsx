@@ -135,6 +135,7 @@ export default function ConfigPage() {
         <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
         <Input
           className="h-8 pl-8 pr-7 text-xs"
+          aria-label={t.common.search}
           placeholder={t.common.search}
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
@@ -538,6 +539,7 @@ export default function ConfigPage() {
               </div>
             ) : (
               <textarea
+                aria-label={t.config.rawYaml}
                 className="flex min-h-[600px] w-full bg-transparent px-4 py-3 text-sm font-mono leading-relaxed placeholder:text-muted-foreground focus-visible:outline-none border-t border-border"
                 value={yamlText}
                 onChange={(e) => setYamlText(e.target.value)}

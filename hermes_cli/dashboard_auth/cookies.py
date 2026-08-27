@@ -231,14 +231,17 @@ def clear_session_cookies(response: Response, *, prefix: str = "") -> None:
         response.set_cookie(
             f"{variant}{SESSION_AT_COOKIE}", "", max_age=0,
             path=path, httponly=True, samesite="lax",
+            secure=bool(variant),
         )
         response.set_cookie(
             f"{variant}{SESSION_RT_COOKIE}", "", max_age=0,
             path=path, httponly=True, samesite="lax",
+            secure=bool(variant),
         )
         response.set_cookie(
             f"{variant}{SESSION_PROVIDER_COOKIE}", "", max_age=0,
             path=path, httponly=True, samesite="lax",
+            secure=bool(variant),
         )
 
 
@@ -259,6 +262,7 @@ def clear_pkce_cookie(response: Response, *, prefix: str = "") -> None:
         response.set_cookie(
             f"{variant}{PKCE_COOKIE}", "", max_age=0,
             path=path, httponly=True, samesite="lax",
+            secure=bool(variant),
         )
 
 
@@ -334,6 +338,7 @@ def clear_sso_attempt_cookie(response: Response, *, prefix: str = "") -> None:
         response.set_cookie(
             f"{variant}{SSO_ATTEMPT_COOKIE}", "", max_age=0,
             path=path, httponly=True, samesite="lax",
+            secure=bool(variant),
         )
 
 

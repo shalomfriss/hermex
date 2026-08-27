@@ -1,6 +1,8 @@
 import { defineConfig, type Plugin } from "vite";
 import babel from "@rolldown/plugin-babel";
 import react, { reactCompilerPreset } from "@vitejs/plugin-react";
+import fs from "node:fs";
+import { createRequire } from "node:module";
 
 /** React Compiler preset scoped to modules that can actually contain
  *  components/hooks (JSX syntax or a react-ish import). The preset's default
@@ -15,6 +17,39 @@ import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 
 const BACKEND = process.env.HERMES_DASHBOARD_URL ?? "http://127.0.0.1:9119";
+const require = createRequire(import.meta.url);
+const SWAGGER_UI_DIST = path.dirname(require.resolve("swagger-ui-dist/package.json"));
+const SWAGGER_UI_A11Y_DIST = path.resolve(__dirname, "docs-assets");
+
+/** Emit the API docs runtime beside the production dashboard bundle.
+ *  Keeping these stable, same-origin URLs avoids a runtime CDN dependency and
+ *  lets the strict dashboard CSP apply unchanged. */
+function swaggerUiAssets(): Plugin {
+  return {
+    name: "hermes:swagger-ui-assets",
+    apply: "build",
+    generateBundle() {
+      for (const [sourceName, outputName] of [
+        ["swagger-ui.css", "swagger-ui.css"],
+        ["swagger-ui-bundle.js", "swagger-ui-bundle.js"],
+        ["LICENSE", "LICENSE.swagger-ui"],
+      ]) {
+        this.emitFile({
+          type: "asset",
+          fileName: `docs-assets/${outputName}`,
+          source: fs.readFileSync(path.join(SWAGGER_UI_DIST, sourceName)),
+        });
+      }
+      for (const filename of ["swagger-ui-a11y.css", "swagger-ui-a11y.js"]) {
+        this.emitFile({
+          type: "asset",
+          fileName: `docs-assets/${filename}`,
+          source: fs.readFileSync(path.join(SWAGGER_UI_A11Y_DIST, filename)),
+        });
+      }
+    },
+  };
+}
 
 /**
  * In production the Python `hermes dashboard` server injects a one-shot
@@ -87,6 +122,7 @@ export default defineConfig({
     babel({ presets: [compilerPreset()] }),
     tailwindcss(),
     hermesDevToken(),
+    swaggerUiAssets(),
   ],
   resolve: {
     alias: {

@@ -1191,7 +1191,7 @@ export default function ProfilesPage() {
                             "line-clamp-2",
                             p.description
                               ? "text-muted-foreground"
-                              : "text-muted-foreground/60 italic",
+                              : "text-text-tertiary italic",
                           )}
                         >
                           {p.description || L.noDescription}

@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "An AI agent with advanced tool-calling capabilities, featuring a flexible toolsets system for organizing and managing tools.",
   "private": true,
+  "scarfSettings": {
+    "enabled": false
+  },
   "workspaces": [
     "apps/*",
     "ui-tui",
@@ -67,6 +70,7 @@
     "npm": "<11.10.0 || >=11.17.0"
   },
   "allowScripts": {
+    "@scarf/scarf": false,
     "unicode-animations": false,
     "esbuild@0.28.1": true,
     "node-pty@1.1.0": true,

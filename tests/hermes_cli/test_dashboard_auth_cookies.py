@@ -13,6 +13,7 @@ from hermes_cli.dashboard_auth.cookies import (
     SESSION_RT_COOKIE,
     clear_pkce_cookie,
     clear_session_cookies,
+    clear_sso_attempt_cookie,
     read_pkce_cookie,
     read_session_cookies,
     set_pkce_cookie,
@@ -45,6 +46,7 @@ def _build_app(use_https: bool = True, prefix: str = ""):
         r = Response("ok")
         clear_session_cookies(r, prefix=prefix)
         clear_pkce_cookie(r, prefix=prefix)
+        clear_sso_attempt_cookie(r, prefix=prefix)
         return r
 
     return app
@@ -106,6 +108,26 @@ def test_session_cookies_use_bare_name_on_http():
     # No Secure flag (HTTP).
     at = next(c for c in cookies if c.startswith(f"{SESSION_AT_COOKIE}="))
     assert "Secure" not in at
+
+
+def test_prefixed_cookie_deletions_retain_required_secure_attribute():
+    """Browsers reject __Host-/__Secure- Set-Cookie without Secure.
+
+    Logout clears every historical name variant, but the prefixed deletion
+    headers must still satisfy the prefix contract or the browser ignores
+    them and leaves the authenticated session alive.
+    """
+    client = TestClient(_build_app(use_https=True))
+
+    cookies = client.get("/clear").headers.get_list("set-cookie")
+    prefixed = [
+        cookie
+        for cookie in cookies
+        if cookie.startswith("__Host-") or cookie.startswith("__Secure-")
+    ]
+
+    assert prefixed
+    assert all("Secure" in cookie for cookie in prefixed)
 
 
 

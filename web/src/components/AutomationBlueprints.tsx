@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { Clock, Wand2 } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
-import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
+import {
+  AccessibleSelect as Select,
+  AccessibleSelectOption as SelectOption,
+} from "@/components/AccessibleSelect";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Card, CardContent } from "@nous-research/ui/ui/components/card";
 import { Input } from "@nous-research/ui/ui/components/input";
@@ -27,17 +30,24 @@ function initialValues(blueprint: AutomationBlueprint): Record<string, string> {
 }
 
 function FieldInput({
+  id,
   field,
   value,
   onChange,
 }: {
+  id: string;
   field: AutomationBlueprintField;
   value: string;
   onChange: (v: string) => void;
 }) {
   if (field.type === "enum" || field.type === "weekdays") {
     return (
-      <Select value={value} onValueChange={(v) => onChange(v)}>
+      <Select
+        id={id}
+        aria-label={field.label}
+        value={value}
+        onValueChange={(v) => onChange(v)}
+      >
         {field.options.map((opt) => (
           <SelectOption key={opt} value={opt}>
             {opt}
@@ -49,6 +59,7 @@ function FieldInput({
   if (field.type === "time") {
     return (
       <Input
+        id={id}
         type="time"
         value={value}
         onChange={(e) => onChange(e.target.value)}
@@ -58,6 +69,7 @@ function FieldInput({
   // text
   return (
     <Input
+      id={id}
       type="text"
       value={value}
       placeholder={field.help || field.label}
@@ -134,6 +146,7 @@ function BlueprintCard({
               <div key={f.name} className="space-y-1">
                 <Label htmlFor={`${blueprint.key}-${f.name}`}>{f.label}</Label>
                 <FieldInput
+                  id={`${blueprint.key}-${f.name}`}
                   field={f}
                   value={values[f.name] ?? ""}
                   onChange={(v) => setValues((prev) => ({ ...prev, [f.name]: v }))}
