@@ -98,6 +98,7 @@ def build_dashboard_parser(
     cmd_dashboard: Callable,
     cmd_dashboard_register: Callable,
     cmd_dashboard_sso_check: Callable | None = None,
+    cmd_dashboard_refresh_binding_rotate: Callable | None = None,
 ) -> None:
     """Attach the ``dashboard`` and ``serve`` subcommands.
 
@@ -246,3 +247,16 @@ def build_dashboard_parser(
         help="Override the dashboard public URL used to construct the callback",
     )
     dashboard_sso_check_parser.set_defaults(func=cmd_dashboard_sso_check)
+
+    if cmd_dashboard_refresh_binding_rotate is not None:
+        refresh_rotation_parser = sso_subparsers.add_parser(
+            "rotate-refresh-binding-key",
+            help="Rotate the dashboard refresh-ownership signing key",
+            description=(
+                "Activate a new refresh-ownership signing key and retain one "
+                "previous generation for bounded session continuity."
+            ),
+        )
+        refresh_rotation_parser.set_defaults(
+            func=cmd_dashboard_refresh_binding_rotate
+        )

@@ -88,11 +88,13 @@ def test_parser_dispatches_nested_sso_without_changing_existing_forms():
     dashboard_handler = object()
     register_handler = object()
     sso_handler = object()
+    rotate_handler = object()
     build_dashboard_parser(
         subparsers,
         cmd_dashboard=dashboard_handler,
         cmd_dashboard_register=register_handler,
         cmd_dashboard_sso_check=sso_handler,
+        cmd_dashboard_refresh_binding_rotate=rotate_handler,
     )
 
     bare = parser.parse_args(["dashboard"])
@@ -100,12 +102,14 @@ def test_parser_dispatches_nested_sso_without_changing_existing_forms():
     sso = parser.parse_args(
         ["dashboard", "sso", "check", "--json", "--public-url", "https://h.example"]
     )
+    rotate = parser.parse_args(["dashboard", "sso", "rotate-refresh-binding-key"])
 
     assert bare.func is dashboard_handler
     assert register.func is register_handler
     assert sso.func is sso_handler
     assert sso.json is True
     assert sso.public_url == "https://h.example"
+    assert rotate.func is rotate_handler
 
 
 @pytest.mark.parametrize(
