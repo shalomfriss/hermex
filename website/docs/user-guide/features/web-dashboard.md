@@ -859,6 +859,31 @@ The ID token is what establishes identity — the access token is treated as opa
 
 > **Confidential clients** (those with a `client_secret`) are not supported yet — configure a public + PKCE client, which is the typical choice for a browser-facing dashboard.
 
+#### Production readiness preflight
+
+Run the preflight from the deployed environment before sending traffic to a
+self-hosted OIDC dashboard:
+
+```bash
+hermes dashboard sso check --public-url https://dashboard.example.com
+# Add --json for a machine-readable deployment gate.
+```
+
+Exit code `0` means every configuration, policy, callback, discovery, and live
+JWKS check passed. Any failure exits nonzero; do not treat the command as an
+informational warning in deployment automation. In particular, readiness now
+requires a complete callback URL. Public callbacks must use HTTPS, with plain
+HTTP allowed only for explicit `localhost`, `127.0.0.1`, or `::1` development.
+
+The command fetches the discovered `jwks_uri` with a five-second timeout and a
+1 MiB response limit. The document must be valid JSON and contain at least one
+parseable RSA or EC signing key whose `use`, `key_ops`, `alg`, and curve are
+compatible with Hermes' allowed algorithms and the IdP's discovery metadata.
+An unreachable, oversized, malformed, empty, encryption-only, symmetric, or
+algorithm-incompatible JWKS fails readiness. Human output and JSON report the
+five check categories separately; diagnostics never include client secrets,
+tokens, response bodies, or transport exception details.
+
 #### Worked example: Keycloak
 
 [Keycloak](https://www.keycloak.org/) is one of the easiest self-hosted OIDC servers to stand up for a local test — it runs as a single container in dev mode (in-memory DB) and exposes textbook OIDC discovery. This walkthrough gets you from nothing to a working dashboard login in a few minutes.
