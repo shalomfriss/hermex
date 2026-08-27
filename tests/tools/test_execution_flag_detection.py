@@ -274,13 +274,18 @@ def _time_benign_segments(count):
 
 
 def test_benign_segment_scaling_benchmark():
-    """Retain real metrics without making correctness depend on wall-clock ratios."""
-    small, small_result = _time_benign_segments(2_000)
-    large, large_result = _time_benign_segments(4_000)
+    """Sample scaling without monopolizing a standard CI runner core."""
+    # This is diagnostic output, not a load test: correctness must not depend
+    # on wall-clock ratios.  The former 2k/4k sample took 121s even in an
+    # otherwise idle standard-runner process and exceeded the 300s per-file
+    # limit under the normal eight-file suite concurrency. 50/100 segments
+    # still exercise the multi-segment path while leaving scheduler headroom.
+    small, small_result = _time_benign_segments(50)
+    large, large_result = _time_benign_segments(100)
 
     assert small_result == (False, None, None)
     assert large_result == (False, None, None)
-    print(f"benign segment benchmark: 2k={small:.3f}s, 4k={large:.3f}s")
+    print(f"benign segment benchmark: 50={small:.3f}s, 100={large:.3f}s")
 
 
 def test_max_accepted_separator_free_input_is_fast():
