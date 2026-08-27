@@ -153,17 +153,35 @@ def _require_https_or_loopback(url: str, *, field: str) -> str:
     can't ship the authorization code / refresh token in cleartext. Returns
     the URL unchanged on success; raises :class:`ProviderError` otherwise.
     """
-    parsed = urllib.parse.urlparse(url)
+    if not isinstance(url, str) or not url:
+        raise ProviderError(f"OIDC {field} must be an absolute URL")
+    if any(ch.isspace() or ord(ch) < 0x20 for ch in url) or any(
+        ch in url for ch in ('\\', '"', "'", "<", ">")
+    ):
+        raise ProviderError(f"OIDC {field} contains unsafe URL characters")
+    try:
+        parsed = urllib.parse.urlparse(url)
+        hostname = parsed.hostname or ""
+        # Accessing port performs urllib's bracket/range validation.
+        _ = parsed.port
+    except ValueError as exc:
+        raise ProviderError(f"OIDC {field} is malformed") from exc
+    if not hostname or parsed.username is not None or parsed.password is not None:
+        raise ProviderError(
+            f"OIDC {field} must be an absolute URL without credentials"
+        )
+    if parsed.fragment:
+        raise ProviderError(f"OIDC {field} must not contain a fragment")
     if parsed.scheme == "https":
         return url
-    if parsed.scheme == "http" and (parsed.hostname or "") in (
+    if parsed.scheme == "http" and hostname in (
         "localhost",
         "127.0.0.1",
         "::1",
     ):
         return url
     raise ProviderError(
-        f"OIDC {field} must be https:// (or http on localhost), got {url!r}"
+        f"OIDC {field} must be https:// (or http on localhost)"
     )
 
 
@@ -296,7 +314,9 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
             expected_nonce=nonce,
         )
 
-    def refresh_session(self, *, refresh_token: str) -> Session:
+    def refresh_session(
+        self, *, refresh_token: str, access_token: str = ""
+    ) -> Session:
         if not refresh_token:
             raise RefreshExpiredError("no refresh token present in session")
         disco = self._get_discovery()
@@ -319,6 +339,7 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
             data,
             bad_request_exc=RefreshExpiredError,
             previous_refresh_token=refresh_token,
+            previous_id_token=access_token,
             extra_headers=extra_headers,
         )
 
@@ -356,6 +377,11 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         endpoint = str(disco.get("revocation_endpoint") or "").strip()
         if not endpoint:
             return None
+        try:
+            _require_https_or_loopback(endpoint, field="revocation_endpoint")
+        except ProviderError:
+            logger.warning("self-hosted OIDC: unsafe revocation endpoint ignored")
+            return None
         data = {
             "token": refresh_token,
             "token_type_hint": "refresh_token",
@@ -374,6 +400,7 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
                 data=data,
                 headers=headers,
                 timeout=_TOKEN_ENDPOINT_TIMEOUT_SEC,
+                follow_redirects=False,
             )
         except Exception as exc:  # noqa: BLE001 — best-effort
             logger.debug("self-hosted OIDC: revoke failed (ignored): %s", exc)
@@ -432,6 +459,7 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         *,
         bad_request_exc: type[Exception],
         previous_refresh_token: str = "",
+        previous_id_token: str = "",
         extra_headers: Optional[Dict[str, str]] = None,
         expected_nonce: str = "",
     ) -> Session:
@@ -476,21 +504,59 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
 
         payload = self._parse_json_body(response)
 
-        id_token = payload.get("id_token")
-        if not id_token or not isinstance(id_token, str):
-            raise ProviderError(
-                "OIDC token response missing id_token — ensure the 'openid' "
-                "scope is configured and the client is allowed to receive an "
-                "ID token."
-            )
-
         token_type = str(payload.get("token_type", "")).lower()
         if token_type and token_type != "bearer":
             raise ProviderError(f"unexpected token_type={token_type!r}")
 
-        claims, identity = self._verify_and_authorize_id_token(
-            id_token, expected_nonce=expected_nonce
-        )
+        id_token = payload.get("id_token")
+        if id_token and isinstance(id_token, str):
+            claims, identity = self._verify_and_authorize_id_token(
+                id_token, expected_nonce=expected_nonce
+            )
+            if previous_refresh_token:
+                if not previous_id_token:
+                    raise RefreshExpiredError(
+                        "OIDC refresh cannot verify subject continuity without "
+                        "the prior identity; a fresh login is required"
+                    )
+                try:
+                    prior_claims = self._verify_id_token(
+                        previous_id_token, allow_expired=True
+                    )
+                except InvalidCodeError as exc:
+                    raise RefreshExpiredError(
+                        "prior OIDC identity is invalid; a fresh login is required"
+                    ) from exc
+                if prior_claims.get("sub") != claims.get("sub"):
+                    raise RefreshExpiredError(
+                        "OIDC refresh changed the authenticated subject; "
+                        "a fresh login is required"
+                    )
+        elif previous_refresh_token:
+            # OIDC Core 12.2 permits a successful refresh response to omit a
+            # new ID token. Reuse only the previously verified ID token, and
+            # re-run signature, expiry, and current admission-policy checks so
+            # refresh cannot extend stale identity or bypass offboarding.
+            if not previous_id_token:
+                raise RefreshExpiredError(
+                    "OIDC refresh omitted id_token and no valid prior identity "
+                    "is available; a fresh login is required"
+                )
+            try:
+                claims, identity = self._verify_and_authorize_id_token(
+                    previous_id_token
+                )
+            except InvalidCodeError as exc:
+                raise RefreshExpiredError(
+                    "OIDC refresh omitted id_token and the prior identity is "
+                    "no longer valid; a fresh login is required"
+                ) from exc
+            id_token = previous_id_token
+        else:
+            raise ProviderError(
+                "OIDC authorization-code response missing id_token — ensure "
+                "the 'openid' scope is configured"
+            )
 
         # Refresh-token rotation: prefer a freshly-issued one, else keep the
         # previous (some IDPs don't rotate). Empty string if neither — the
@@ -601,6 +667,16 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         revocation_endpoint = str(
             payload.get("revocation_endpoint", "") or ""
         ).strip()
+        if revocation_endpoint:
+            try:
+                _require_https_or_loopback(
+                    revocation_endpoint, field="revocation_endpoint"
+                )
+            except ProviderError:
+                logger.warning(
+                    "self-hosted OIDC: unsafe revocation endpoint ignored"
+                )
+                revocation_endpoint = ""
 
         # Client-authentication methods the IDP advertises for the token
         # endpoint. Used to pick client_secret_basic vs client_secret_post for
@@ -648,7 +724,11 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         return self._jwks_client
 
     def _verify_id_token(
-        self, id_token: str, *, expected_nonce: str = ""
+        self,
+        id_token: str,
+        *,
+        expected_nonce: str = "",
+        allow_expired: bool = False,
     ) -> Dict[str, Any]:
         import jwt  # lazy import — keeps startup fast for the ungated path
 
@@ -685,7 +765,10 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
                 algorithms=list(_ALLOWED_ID_TOKEN_ALGS),
                 audience=self._client_id,
                 issuer=disco["issuer"],
-                options={"require": ["exp", "iat", "aud", "iss", "sub"]},
+                options={
+                    "require": ["exp", "iat", "aud", "iss", "sub"],
+                    "verify_exp": not allow_expired,
+                },
             )
         except jwt.ExpiredSignatureError as exc:
             # verify_session() catches this and returns None per protocol.

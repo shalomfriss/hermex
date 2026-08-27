@@ -855,7 +855,7 @@ The provider verifies the OpenID Connect **ID token** (RS256/ES256) against the 
 | `display_name` | `name` → `preferred_username` → `nickname` → `email` |
 | `org_id` | `org_id` / `organization`, else joined `groups` |
 
-The ID token is what establishes identity — the access token is treated as opaque (the OIDC spec does not require it to be a JWT). Endpoint URLs are required to be HTTPS (loopback `http://` is allowed for local-dev IDPs), and the discovery document's advertised `issuer` must match your configured one (a trailing-slash difference is tolerated). Refresh tokens, when the IDP issues them, are used for silent re-auth via the standard `refresh_token` grant; logout calls the IDP's RFC 7009 `revocation_endpoint` when advertised.
+The ID token is what establishes identity — the access token is treated as opaque (the OIDC spec does not require it to be a JWT). Endpoint URLs must be absolute and credential-free and are required to use HTTPS (loopback `http://` is allowed for local-dev IDPs); the discovery document's advertised `issuer` must match your configured one (a trailing-slash difference is tolerated). Refresh tokens, when the IDP issues them, are used for silent re-auth via the standard `refresh_token` grant. A conforming refresh response may omit a new `id_token`; Hermes retains the prior identity only while its signed ID token remains valid and still passes admission policy, otherwise it requests a fresh login. Logout calls the IDP's RFC 7009 `revocation_endpoint` when safely advertised; the bounded request does not follow redirects.
 
 > **Confidential clients** (those with a `client_secret`) are not supported yet — configure a public + PKCE client, which is the typical choice for a browser-facing dashboard.
 

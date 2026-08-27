@@ -646,6 +646,34 @@ def test_native_refresh_dead_token_returns_401(gated_client):
     assert r.json()["error"] == "session_expired"
 
 
+def test_native_refresh_without_prior_identity_forces_controlled_relogin(
+    gated_client,
+):
+    class PriorIdentityRequiredProvider(StubAuthProvider):
+        name = "native-prior-identity-required"
+
+        def refresh_session(self, *, refresh_token: str, access_token: str = ""):
+            from hermes_cli.dashboard_auth import RefreshExpiredError
+
+            if not access_token:
+                raise RefreshExpiredError("fresh login required")
+            return super().refresh_session(refresh_token=refresh_token)
+
+    clear_providers()
+    register_provider(PriorIdentityRequiredProvider())
+
+    response = gated_client.post(
+        "/auth/native/refresh",
+        json={
+            "refresh_token": "recognized-refresh-token",
+            "provider": "native-prior-identity-required",
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error"] == "session_expired"
+
+
 def test_native_refresh_access_denial_is_terminal_and_generic(gated_client):
     class DenyingNativeProvider(StubAuthProvider):
         name = "native-denying"

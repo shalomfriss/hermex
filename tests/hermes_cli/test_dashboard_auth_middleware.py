@@ -20,7 +20,12 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 from fastapi.testclient import TestClient
 
 from hermes_cli import web_server
-from hermes_cli.dashboard_auth import LoginStart, clear_providers, register_provider
+from hermes_cli.dashboard_auth import (
+    LoginStart,
+    Session,
+    clear_providers,
+    register_provider,
+)
 from hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE, SESSION_RT_COOKIE
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 
@@ -429,6 +434,80 @@ class _DenyingProvider(StubAuthProvider):
         self._deny()
 
 
+class _PriorIdentityRefreshProvider(StubAuthProvider):
+    name = "prior-identity"
+    display_name = "Prior identity refresh (test only)"
+
+    def __init__(self):
+        super().__init__()
+        self.seen_access_token = None
+
+    def verify_session(self, *, access_token: str):
+        return None
+
+    def refresh_session(self, *, refresh_token: str, access_token: str = ""):
+        import time
+
+        self.seen_access_token = access_token
+        return Session(
+            user_id="refreshed-user",
+            email="refreshed@example.com",
+            display_name="Refreshed User",
+            org_id="",
+            provider=self.name,
+            expires_at=int(time.time()) + 300,
+            access_token=access_token,
+            refresh_token="rotated-refresh",
+        )
+
+
+class _ProactiveRefreshProvider(_PriorIdentityRefreshProvider):
+    name = "proactive-refresh"
+
+    def __init__(self):
+        super().__init__()
+        self.refresh_calls = 0
+
+    def verify_session(self, *, access_token: str):
+        import time
+
+        return Session(
+            user_id="verified-user",
+            email="verified@example.com",
+            display_name="Verified User",
+            org_id="",
+            provider=self.name,
+            expires_at=int(time.time()) + 30,
+            access_token=access_token,
+            refresh_token="",
+        )
+
+    def refresh_session(self, *, refresh_token: str, access_token: str = ""):
+        import time
+
+        self.refresh_calls += 1
+        self.seen_access_token = access_token
+        return Session(
+            user_id="verified-user",
+            email="verified@example.com",
+            display_name="Verified User",
+            org_id="",
+            provider=self.name,
+            expires_at=int(time.time()) + 30,
+            access_token=access_token,
+            refresh_token="rotated-refresh",
+        )
+
+
+class _ProactiveRefreshOutageProvider(_ProactiveRefreshProvider):
+    name = "proactive-refresh-outage"
+
+    def refresh_session(self, *, refresh_token: str, access_token: str = ""):
+        from hermes_cli.dashboard_auth import ProviderError
+
+        raise ProviderError("refresh endpoint unavailable")
+
+
 def _mint_stub_at(stub: StubAuthProvider) -> str:
     """Mint a valid access-token cookie value from a StubAuthProvider via its
     own login round trip (so the HMAC signature matches what verify expects)."""
@@ -489,6 +568,54 @@ def test_all_providers_unreachable_returns_503(_gated_state):
     assert r.json()["error"] == "provider_unavailable"
     assert r.json()["retryable"] is True
     assert r.json()["reference_id"].startswith("AUTH-")
+
+
+def test_refresh_receives_prior_identity_token_when_provider_supports_it(
+    _gated_state,
+):
+    provider = _PriorIdentityRefreshProvider()
+    register_provider(provider)
+    client = _gated_state()
+    client.cookies.set(SESSION_AT_COOKIE, "previous-verified-id-token")
+    client.cookies.set(SESSION_RT_COOKIE, "refresh-token")
+
+    response = client.get("/api/auth/me")
+
+    assert response.status_code == 200
+    assert provider.seen_access_token == "previous-verified-id-token"
+
+
+def test_near_expiry_session_refreshes_while_prior_identity_is_still_valid(
+    _gated_state,
+):
+    provider = _ProactiveRefreshProvider()
+    register_provider(provider)
+    client = _gated_state()
+    client.cookies.set(SESSION_AT_COOKIE, "still-valid-id-token")
+    client.cookies.set(SESSION_RT_COOKIE, "refresh-token")
+
+    response = client.get("/api/auth/me")
+
+    assert response.status_code == 200
+    assert provider.seen_access_token == "still-valid-id-token"
+    assert "rotated-refresh" in response.headers.get("set-cookie", "")
+
+    second_response = client.get("/api/auth/me")
+
+    assert second_response.status_code == 200
+    assert provider.refresh_calls == 1
+
+
+def test_proactive_refresh_outage_serves_still_valid_session(_gated_state):
+    register_provider(_ProactiveRefreshOutageProvider())
+    client = _gated_state()
+    client.cookies.set(SESSION_AT_COOKIE, "still-valid-id-token")
+    client.cookies.set(SESSION_RT_COOKIE, "refresh-token")
+
+    response = client.get("/api/auth/me")
+
+    assert response.status_code == 200
+    assert response.json()["user_id"] == "verified-user"
 
 
 def test_access_denial_is_terminal_for_cookie_bearer_and_refresh(_gated_state):

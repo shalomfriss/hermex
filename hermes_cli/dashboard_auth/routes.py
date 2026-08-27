@@ -51,6 +51,7 @@ from hermes_cli.dashboard_auth.cookies import (
 from hermes_cli.dashboard_auth.client_ip import client_ip
 from hermes_cli.dashboard_auth.login_page import render_login_html
 from hermes_cli.dashboard_auth.middleware import (
+    _attempt_refresh,
     access_denied_response,
     provider_outage_response,
 )
@@ -1142,34 +1143,26 @@ async def auth_native_refresh(request: Request, body: _NativeRefreshBody):
         ``session_expired`` so the desktop starts a fresh native login;
       * a provider's IDP is unreachable and none rotated → 503.
     """
-    from hermes_cli.dashboard_auth import list_session_providers
-    from hermes_cli.dashboard_auth.base import RefreshExpiredError
-
     if not body.refresh_token:
         raise HTTPException(status_code=400, detail="refresh_token required")
 
-    providers = list_session_providers()
-    if body.provider:
-        providers.sort(key=lambda p: p.name != body.provider)
+    try:
+        refreshed = _attempt_refresh(
+            request,
+            refresh_token=body.refresh_token,
+            access_token="",
+            provider_hint=body.provider,
+        )
+    except AccessDeniedError as e:
+        return access_denied_response(request, error=e)
+    except ProviderError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Auth provider {str(e)!r} unreachable",
+        ) from e
 
-    unreachable: str | None = None
-    for provider in providers:
-        try:
-            session = provider.refresh_session(refresh_token=body.refresh_token)
-        except AccessDeniedError as e:
-            return access_denied_response(
-                request, error=e, provider=provider.name
-            )
-        except RefreshExpiredError:
-            continue
-        except ProviderError as e:
-            if unreachable is None:
-                unreachable = provider.name
-            _log.warning(
-                "dashboard-auth: provider %r unreachable during native refresh: %s",
-                provider.name, e,
-            )
-            continue
+    if refreshed is not None:
+        session, _provider_name = refreshed
         audit_log(
             AuditEvent.REFRESH_SUCCESS,
             provider=session.provider,
@@ -1184,9 +1177,6 @@ async def auth_native_refresh(request: Request, body: _NativeRefreshBody):
             "provider": session.provider,
             "user_id": session.user_id,
         }
-
-    if unreachable is not None:
-        return provider_outage_response(request, unreachable)
     audit_log(
         AuditEvent.REFRESH_FAILURE,
         reason="all_providers_rejected_rt",

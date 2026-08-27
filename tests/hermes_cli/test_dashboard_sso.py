@@ -415,7 +415,7 @@ def test_valid_public_and_confidential_reports_are_safe(monkeypatch, valid_jwks)
     assert "super-secret" not in json.dumps(confidential)
 
 
-def test_discovered_endpoint_userinfo_is_not_exposed(valid_jwks):
+def test_discovered_endpoint_userinfo_is_rejected_without_exposure(valid_jwks):
     configured = {"issuer": ISSUER, "client_id": "client"}
     discovery = {
         **DISCOVERY,
@@ -428,8 +428,11 @@ def test_discovered_endpoint_userinfo_is_not_exposed(valid_jwks):
     ):
         result = dashboard_sso.check_sso(public_url="https://hermes.example.com")
 
-    assert result["ready"] is True
-    assert result["endpoint_origins"]["jwks"] == "https://idp.example.com"
+    assert result["ready"] is False
+    assert result["checks"]["discovery"] == {
+        "ok": False,
+        "code": "discovery_endpoint_policy",
+    }
     assert "transport-secret" not in json.dumps(result)
 
 

@@ -16,8 +16,12 @@ binds.
 """
 from __future__ import annotations
 
+from collections import OrderedDict
+import hashlib
+import inspect
 import logging
 import secrets
+import threading
 from typing import Awaitable, Callable
 
 from fastapi import Request
@@ -43,6 +47,11 @@ from hermes_cli.dashboard_auth.client_ip import client_ip
 from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
 
 _log = logging.getLogger(__name__)
+
+_REFRESH_EARLY_SECONDS = 60
+_REFRESH_STATE_MAX = 1024
+_refresh_state_lock = threading.Lock()
+_refreshed_identities: OrderedDict[str, int] = OrderedDict()
 
 # Prefixes that bypass the auth gate. Match via ``path == prefix`` or
 # ``path.startswith(prefix)`` — so ``/assets/`` (with trailing slash)
@@ -569,6 +578,7 @@ async def gated_auth_middleware(
             refreshed = _attempt_refresh(
                 request,
                 refresh_token=_rt,
+                access_token=at,
                 provider_hint=provider_hint,
             )
         except AccessDeniedError as e:
@@ -582,35 +592,12 @@ async def gated_auth_middleware(
             return provider_outage_response(request, str(e))
         if refreshed is not None:
             new_session, refreshing_provider = refreshed
-            request.state.session = new_session
-            response = await call_next(request)
-            # Persist the ROTATED tokens. Portal rotates the refresh token on
-            # every refresh and runs reuse-detection, so writing the new RT
-            # back is mandatory: a stale RT cookie would replay a rotated
-            # token on the next refresh and (outside Portal's grace) revoke
-            # the whole session. Bind cookie Secure/Path to the request shape.
-            from hermes_cli.dashboard_auth.cookies import (
-                detect_https,
-                set_session_cookies,
-            )
-            from hermes_cli.dashboard_auth.prefix import prefix_from_request
-
-            set_session_cookies(
-                response,
-                access_token=new_session.access_token,
-                refresh_token=new_session.refresh_token,
-                access_token_expires_in=_expires_in_seconds(new_session),
-                use_https=detect_https(request),
-                prefix=prefix_from_request(request),
+            return await _serve_refreshed_session(
+                request,
+                call_next,
+                session=new_session,
                 provider=refreshing_provider,
             )
-            audit_log(
-                AuditEvent.REFRESH_SUCCESS,
-                provider=refreshing_provider,
-                user_id=new_session.user_id,
-                ip=_client_ip(request),
-            )
-            return response
 
         audit_log(
             AuditEvent.SESSION_VERIFY_FAILURE,
@@ -628,6 +615,39 @@ async def gated_auth_middleware(
         from hermes_cli.dashboard_auth.prefix import prefix_from_request
         clear_session_cookies(response, prefix=prefix_from_request(request))
         return response
+
+    # Refresh while the verified identity is still valid. OIDC permits a
+    # refresh response to omit id_token, so this short window lets providers
+    # safely retain and re-check the prior identity instead of discovering the
+    # omission only after the browser has evicted the expired ID-token cookie.
+    if (
+        _rt
+        and (int(session.expires_at) - _now_seconds()) <= _REFRESH_EARLY_SECONDS
+        and not _identity_was_refreshed(at)
+    ):
+        try:
+            refreshed = _attempt_refresh(
+                request,
+                refresh_token=_rt,
+                access_token=at,
+                provider_hint=provider_hint or session.provider,
+            )
+        except AccessDeniedError as e:
+            return access_denied_response(
+                request, error=e, clear_cookies=True
+            )
+        except ProviderError:
+            # The current identity already verified. A proactive refresh
+            # outage must not turn a still-valid request into 503 or logout.
+            refreshed = None
+        if refreshed is not None:
+            new_session, refreshing_provider = refreshed
+            return await _serve_refreshed_session(
+                request,
+                call_next,
+                session=new_session,
+                provider=refreshing_provider,
+            )
 
     request.state.session = session
     response = await call_next(request)
@@ -657,7 +677,97 @@ def _expires_in_seconds(session) -> int:
     return max(60, int(session.expires_at) - int(time.time()))
 
 
-def _attempt_refresh(request: Request, *, refresh_token, provider_hint: str | None = None):
+def _now_seconds() -> int:
+    import time
+
+    return int(time.time())
+
+
+async def _serve_refreshed_session(
+    request: Request,
+    call_next: Callable[[Request], Awaitable[Response]],
+    *,
+    session,
+    provider: str,
+) -> Response:
+    """Serve the request and persist a successful token rotation."""
+    request.state.session = session
+    response = await call_next(request)
+    from hermes_cli.dashboard_auth.cookies import detect_https, set_session_cookies
+    from hermes_cli.dashboard_auth.prefix import prefix_from_request
+
+    set_session_cookies(
+        response,
+        access_token=session.access_token,
+        refresh_token=session.refresh_token,
+        access_token_expires_in=_expires_in_seconds(session),
+        use_https=detect_https(request),
+        prefix=prefix_from_request(request),
+        provider=provider,
+    )
+    audit_log(
+        AuditEvent.REFRESH_SUCCESS,
+        provider=provider,
+        user_id=session.user_id,
+        ip=_client_ip(request),
+    )
+    return response
+
+
+def _token_digest(token: str | None) -> str:
+    return hashlib.sha256((token or "").encode("utf-8")).hexdigest()
+
+
+def _identity_was_refreshed(access_token: str) -> bool:
+    if not access_token:
+        return False
+    now = _now_seconds()
+    key = _token_digest(access_token)
+    with _refresh_state_lock:
+        expires_at = _refreshed_identities.get(key)
+        if expires_at is None:
+            return False
+        if expires_at <= now:
+            _refreshed_identities.pop(key, None)
+            return False
+        _refreshed_identities.move_to_end(key)
+        return True
+
+
+def _mark_identity_refreshed(access_token: str, *, expires_at: int) -> None:
+    if not access_token:
+        return
+    key = _token_digest(access_token)
+    with _refresh_state_lock:
+        _refreshed_identities[key] = expires_at
+        _refreshed_identities.move_to_end(key)
+        while len(_refreshed_identities) > _REFRESH_STATE_MAX:
+            _refreshed_identities.popitem(last=False)
+
+
+def _refresh_session_with_prior_identity(
+    provider: DashboardAuthProvider, *, refresh_token: str, access_token: str
+):
+    """Refresh while preserving compatibility with narrow third-party plugins."""
+    parameters = inspect.signature(provider.refresh_session).parameters.values()
+    supports_prior_identity = any(
+        parameter.name == "access_token"
+        or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+    kwargs = {"refresh_token": refresh_token}
+    if supports_prior_identity:
+        kwargs["access_token"] = access_token
+    return provider.refresh_session(**kwargs)
+
+
+def _attempt_refresh(
+    request: Request,
+    *,
+    refresh_token,
+    access_token: str = "",
+    provider_hint: str | None = None,
+):
     """Try to rotate an expired session via the refresh token.
 
     The provider hint only changes candidate order. ``RefreshExpiredError``
@@ -671,10 +781,30 @@ def _attempt_refresh(request: Request, *, refresh_token, provider_hint: str | No
     """
     if not refresh_token:
         return None
+    providers = _ordered_session_providers(provider_hint)
+    return _attempt_refresh_locked(
+        request,
+        providers=providers,
+        refresh_token=refresh_token,
+        access_token=access_token,
+    )
+
+
+def _attempt_refresh_locked(
+    request: Request,
+    *,
+    providers,
+    refresh_token: str,
+    access_token: str,
+):
     unavailable_provider: str | None = None
-    for provider in _ordered_session_providers(provider_hint):
+    for provider in providers:
         try:
-            new_session = provider.refresh_session(refresh_token=refresh_token)
+            new_session = _refresh_session_with_prior_identity(
+                provider,
+                refresh_token=refresh_token,
+                access_token=access_token,
+            )
         except AccessDeniedError as e:
             e.provider = provider.name
             raise
@@ -701,6 +831,10 @@ def _attempt_refresh(request: Request, *, refresh_token, provider_hint: str | No
                 unavailable_provider = provider.name
             continue
         if new_session is not None:
+            _mark_identity_refreshed(
+                access_token,
+                expires_at=int(new_session.expires_at),
+            )
             return new_session, provider.name
     if unavailable_provider is not None:
         raise ProviderError(unavailable_provider)

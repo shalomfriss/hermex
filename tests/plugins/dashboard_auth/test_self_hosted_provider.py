@@ -248,6 +248,30 @@ class TestDiscovery:
         assert mock_get.call_count == 1
         assert disco2 is disco1
 
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "http://auth.example.com/revoke",
+            "https:///revoke",
+            "https://auth.example.com:99999/revoke",
+            "https://user:password@auth.example.com/revoke",
+            "https://auth.example.com/revoke#fragment",
+            "javascript:alert(1)",
+        ],
+    )
+    def test_ignores_unsafe_revocation_endpoint_without_disabling_login(self, endpoint):
+        p = self._provider()
+        discovery = dict(_DISCOVERY_DOC, revocation_endpoint=endpoint)
+        mock_resp = self._mock_get(200, discovery)
+
+        with patch(
+            "plugins.dashboard_auth.self_hosted.httpx.get", return_value=mock_resp
+        ):
+            discovery = p._get_discovery()
+
+        assert discovery["revocation_endpoint"] == ""
+        assert discovery["token_endpoint"] == _DISCOVERY_DOC["token_endpoint"]
+
 
 # ---------------------------------------------------------------------------
 # OIDC discovery against a REAL HTTP server that redirects (regression)
@@ -573,7 +597,10 @@ class TestConfidentialClient:
         with patch(
             "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
         ) as mock_post:
-            provider.refresh_session(refresh_token="rt_old")
+            provider.refresh_session(
+                refresh_token="rt_old",
+                access_token=id_token,
+            )
         _, kwargs = mock_post.call_args
         assert kwargs["data"]["grant_type"] == "refresh_token"
         assert kwargs["data"]["client_secret"] == "s3cr3t"
@@ -778,6 +805,185 @@ class TestRefreshAndRevoke:
     @pytest.fixture
     def provider(self, rsa_keypair):
         return _make_provider(rsa_keypair)
+
+    def test_refresh_without_new_id_token_retains_valid_verified_identity(
+        self, provider, rsa_keypair
+    ):
+        previous_id_token = _mint_id_token(rsa_keypair, ttl_seconds=300)
+        mock_resp = _mock_post(
+            200,
+            {
+                "access_token": "new-opaque-access-token",
+                "refresh_token": "rotated-refresh-token",
+                "token_type": "Bearer",
+            },
+        )
+
+        with patch(
+            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+        ):
+            session = provider.refresh_session(
+                refresh_token="old-refresh-token",
+                access_token=previous_id_token,
+            )
+
+        assert session.access_token == previous_id_token
+        assert session.refresh_token == "rotated-refresh-token"
+        assert session.expires_at > int(time.time())
+
+    def test_refresh_without_new_id_token_forces_relogin_when_identity_expired(
+        self, provider, rsa_keypair
+    ):
+        expired_id_token = _mint_id_token(rsa_keypair, ttl_seconds=-1)
+        mock_resp = _mock_post(
+            200,
+            {
+                "access_token": "new-opaque-access-token",
+                "refresh_token": "rotated-refresh-token",
+                "token_type": "Bearer",
+            },
+        )
+
+        with patch(
+            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+        ):
+            with pytest.raises(RefreshExpiredError, match="fresh login"):
+                provider.refresh_session(
+                    refresh_token="old-refresh-token",
+                    access_token=expired_id_token,
+                )
+
+    def test_refresh_without_identity_is_not_classified_as_provider_outage(
+        self, provider
+    ):
+        mock_resp = _mock_post(
+            200,
+            {
+                "access_token": "new-opaque-access-token",
+                "refresh_token": "rotated-refresh-token",
+                "token_type": "Bearer",
+            },
+        )
+
+        with patch(
+            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+        ):
+            with pytest.raises(RefreshExpiredError, match="fresh login"):
+                provider.refresh_session(refresh_token="old-refresh-token")
+
+    def test_refresh_with_new_id_token_still_requires_prior_subject_context(
+        self, provider, rsa_keypair
+    ):
+        replacement_id_token = _mint_id_token(rsa_keypair)
+        mock_resp = _mock_post(
+            200,
+            {
+                "access_token": "new-opaque-access-token",
+                "id_token": replacement_id_token,
+                "refresh_token": "rotated-refresh-token",
+                "token_type": "Bearer",
+            },
+        )
+
+        with patch(
+            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+        ):
+            with pytest.raises(RefreshExpiredError, match="prior identity"):
+                provider.refresh_session(refresh_token="old-refresh-token")
+
+    def test_refresh_without_new_id_token_rechecks_admission_policy(
+        self, rsa_keypair
+    ):
+        provider = _make_provider(
+            rsa_keypair,
+            authorization={"max_auth_age_seconds": 60},
+        )
+        prior_id_token = _mint_id_token(
+            rsa_keypair,
+            ttl_seconds=300,
+            extra_claims={"auth_time": int(time.time()) - 600},
+        )
+        mock_resp = _mock_post(
+            200,
+            {
+                "access_token": "new-opaque-access-token",
+                "refresh_token": "rotated-refresh-token",
+                "token_type": "Bearer",
+            },
+        )
+
+        with patch(
+            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+        ):
+            with pytest.raises(AccessDeniedError, match="auth_too_old"):
+                provider.refresh_session(
+                    refresh_token="old-refresh-token",
+                    access_token=prior_id_token,
+                )
+
+    def test_refresh_rejects_new_id_token_for_a_different_subject(
+        self, provider, rsa_keypair
+    ):
+        prior_id_token = _mint_id_token(rsa_keypair, sub="original-user")
+        replacement_id_token = _mint_id_token(rsa_keypair, sub="different-user")
+        mock_resp = _mock_post(
+            200,
+            {
+                "access_token": "new-opaque-access-token",
+                "id_token": replacement_id_token,
+                "refresh_token": "rotated-refresh-token",
+                "token_type": "Bearer",
+            },
+        )
+
+        with patch(
+            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+        ):
+            with pytest.raises(RefreshExpiredError, match="subject"):
+                provider.refresh_session(
+                    refresh_token="old-refresh-token",
+                    access_token=prior_id_token,
+                )
+
+    def test_refresh_invalid_grant_is_terminal_not_an_outage(self, provider):
+        mock_resp = _mock_post(400, {"error": "invalid_grant"})
+
+        with patch(
+            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+        ):
+            with pytest.raises(RefreshExpiredError, match="invalid_grant"):
+                provider.refresh_session(refresh_token="expired-refresh-token")
+
+    def test_refresh_transport_failure_is_classified_as_provider_outage(
+        self, provider
+    ):
+        request = httpx.Request("POST", _DISCOVERY_DOC["token_endpoint"])
+
+        with patch(
+            "plugins.dashboard_auth.self_hosted.httpx.post",
+            side_effect=httpx.ConnectTimeout("timed out", request=request),
+        ):
+            with pytest.raises(ProviderError, match="unreachable"):
+                provider.refresh_session(refresh_token="refresh-token")
+
+    def test_revoke_revalidates_endpoint_before_sending_secrets(self, provider):
+        provider._discovery["revocation_endpoint"] = (
+            "https://client:secret@auth.example.com/revoke"
+        )
+
+        with patch("plugins.dashboard_auth.self_hosted.httpx.post") as mock_post:
+            provider.revoke_session(refresh_token="refresh-secret")
+
+        mock_post.assert_not_called()
+
+    def test_revoke_uses_bounded_non_redirecting_request(self, provider):
+        with patch("plugins.dashboard_auth.self_hosted.httpx.post") as mock_post:
+            provider.revoke_session(refresh_token="refresh-secret")
+
+        mock_post.assert_called_once()
+        kwargs = mock_post.call_args.kwargs
+        assert kwargs["timeout"] == oidc_plugin._TOKEN_ENDPOINT_TIMEOUT_SEC
+        assert kwargs["follow_redirects"] is False
 
 
 # ---------------------------------------------------------------------------
