@@ -15,6 +15,7 @@ import {
   oauthSessionIsLive,
   resolveGatedDownloadAuth,
   resolveJsonBody,
+  resolveOauthRequestAuth,
   resolveOauthRestAuth,
   resolveReadinessProbeAuth
 } from './native-auth-decisions'
@@ -72,6 +73,12 @@ test('resolveOauthRestAuth falls back to cookie when there is no native token', 
   assert.deepEqual(resolveOauthRestAuth(undefined), { kind: 'cookie' })
   // Empty string is not a usable bearer — must fall back, not send "Bearer ".
   assert.deepEqual(resolveOauthRestAuth(''), { kind: 'cookie' })
+})
+
+test('resolveOauthRequestAuth permits multipart only with native bearer auth', () => {
+  assert.deepEqual(resolveOauthRequestAuth('native-at', true), { kind: 'bearer', token: 'native-at' })
+  assert.throws(() => resolveOauthRequestAuth(null, true), /requires native OAuth bearer authentication/i)
+  assert.deepEqual(resolveOauthRequestAuth(null, false), { kind: 'cookie' })
 })
 
 // --- 4. readiness-probe auth (guards the credential-free 401 boot loop) ---

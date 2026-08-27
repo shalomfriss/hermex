@@ -951,6 +951,8 @@ export interface DesktopOauthLoginResult {
 export interface DesktopOauthLogoutResult {
   ok: boolean
   connected: boolean
+  /** True when a stored native refresh token was remotely revoked. */
+  revoked?: boolean
 }
 
 // --- Hermes Cloud (cloud-auto-discovery Phase 3) ---

@@ -14,9 +14,9 @@ ways:
    you approve in the browser you already trust, and the app receives tokens it
    stores in your OS keychain. **No embedded webview, no browser session
    cookies.** This is the default whenever the gateway supports it.
-2. **Embedded sign-in (legacy fallback)** — the app opens a small in-app
-   browser window and captures the gateway's session cookie. Used automatically
-   when the gateway is an older build that doesn't advertise native sign-in.
+2. **Embedded sign-in (legacy compatibility)** — the app opens a small in-app
+   browser window and captures the gateway's session cookie. Used only when a
+   versioned gateway capability explicitly reports no native sign-in.
 
 You don't choose between these — the app detects what the gateway supports and
 picks the best one. This page explains what happens and why.
@@ -70,17 +70,18 @@ single-use and short-lived.
 ## Capability detection & fallback
 
 The desktop reads the gateway's public `/api/status` endpoint, which advertises
-an `auth_flows` array:
+an `auth_flows_version` plus `auth_flows` array:
 
 | `auth_flows` value | Meaning |
 |--------------------|---------|
-| `["cookie", "native_pkce"]` | Gateway supports native sign-in → the app uses it |
-| `["cookie"]` | Gateway supports only the legacy flow → the app uses the embedded webview |
-| *(field absent)* | Older gateway → the app uses the embedded webview |
+| v1 + `["cookie", "native_pkce"]` | Gateway supports native sign-in → the app uses it |
+| v1 + `["cookie"]` | Gateway explicitly supports only the legacy flow → embedded compatibility mode |
+| version/field absent, malformed, timeout, or 5xx | Retryable failure; no auth downgrade |
 
-If native sign-in is advertised but fails for a local reason — e.g. a security
-tool blocks the loopback listener, or you close the browser tab — the app
-**falls back to the embedded flow automatically** so you can still sign in.
+If native sign-in is advertised but fails — including a blocked loopback
+listener, cancellation, timeout, malformed response, or 5xx — the app surfaces
+that native failure and keeps the current identity. It never falls back to a
+cookie session after a failed native attempt.
 
 ## Token lifecycle
 
@@ -90,10 +91,14 @@ tool blocks the loopback listener, or you close the browser tab — the app
   expiry the app calls `/auth/native/refresh` to rotate both tokens, then
   updates the keychain.
 - **Terminal expiry**: if the refresh token is dead (expired / revoked /
-  reuse-detected), the app clears its stored tokens and prompts a fresh
-  sign-in.
-- **Sign out**: clears both the native tokens (keychain) and any legacy session
-  cookie for that gateway.
+  reuse-detected), the app clears its stored tokens and prompts a fresh native
+  sign-in. It does not switch to a cookie identity.
+- **Sign out**: asks the gateway to revoke the IdP refresh token through an
+  access-token-bound identity check, then clears native keychain state and any
+  legacy cookie even when remote revocation is already complete or unavailable.
+- **Remote file uploads**: supported with native bearer authentication. They
+  are explicitly disabled in legacy cookie-only compatibility mode; upgrade
+  the gateway rather than weakening the upload credential boundary.
 
 ## For gateway operators
 
@@ -108,12 +113,13 @@ Passwords, etc.) autofill the form, something no embedded desktop webview can
 offer. Token-only credentials (e.g. drain) are not interactive sign-ins and do
 not advertise `native_pkce`.
 
-The relevant endpoints (all public, pre-auth bootstrap, same as the existing
-`/auth/*` OAuth routes):
+The authorize/token/refresh endpoints are public pre-auth bootstrap routes,
+like the existing `/auth/*` OAuth routes. Revocation is bearer-authenticated:
 
 - `GET /auth/native/authorize` — starts the brokered PKCE login
 - `POST /auth/native/token` — exchanges the loopback code + verifier for tokens
 - `POST /auth/native/refresh` — rotates tokens from the app's refresh token
+- `POST /api/auth/native/revoke` — identity-bound, best-effort refresh-token revocation
 
 ## See also
 

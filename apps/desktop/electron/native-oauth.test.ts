@@ -18,6 +18,7 @@ import {
   generateState,
   NATIVE_FLOW_ID,
   nativeRefreshUrl,
+  nativeRevokeUrl,
   nativeTokenUrl,
   parseLoopbackCallback,
   parseStoredTokenSet,
@@ -75,14 +76,25 @@ test('statusSupportsNativeFlow reads the auth_flows array', () => {
 })
 
 test('resolveLoginStrategy picks native only when advertised and not forced', () => {
-  const gated = { auth_required: true, auth_flows: ['cookie', 'native_pkce'] }
-  const legacy = { auth_required: true, auth_flows: ['cookie'] }
+  const gated = { auth_required: true, auth_flows_version: 1, auth_flows: ['cookie', 'native_pkce'] }
+  const legacy = { auth_required: true, auth_flows_version: 1, auth_flows: ['cookie'] }
 
   assert.equal(resolveLoginStrategy(gated), 'native')
-  // Compatibility fallback: an older gateway lacking native_pkce ⇒ embedded.
+  // Compatibility fallback: an explicit v1 capability lacking native_pkce.
   assert.equal(resolveLoginStrategy(legacy), 'embedded')
-  // A user/env override can pin the legacy flow even on a capable gateway.
-  assert.equal(resolveLoginStrategy(gated, { forceEmbedded: true }), 'embedded')
+})
+
+test('resolveLoginStrategy never downgrades on absent or malformed capability responses', () => {
+  assert.throws(() => resolveLoginStrategy(null), /could not confirm/i)
+  assert.throws(() => resolveLoginStrategy({ version: 'old', auth_required: true }), /could not confirm/i)
+  assert.throws(
+    () => resolveLoginStrategy({ auth_required: true, auth_flows_version: 1, auth_flows: 'native_pkce' }),
+    /malformed/i
+  )
+  assert.throws(
+    () => resolveLoginStrategy({ auth_required: true, auth_flows_version: 2, auth_flows: ['cookie'] }),
+    /unsupported auth capability version/i
+  )
 })
 
 // --- URL building ---
@@ -119,9 +131,10 @@ test('buildNativeAuthorizeUrl omits provider when not given and preserves prefix
   assert.equal(parsed.searchParams.get('provider'), null)
 })
 
-test('nativeTokenUrl / nativeRefreshUrl build the right endpoints', () => {
+test('nativeTokenUrl / nativeRefreshUrl / nativeRevokeUrl build the right endpoints', () => {
   assert.equal(nativeTokenUrl('https://gw.example.com'), 'https://gw.example.com/auth/native/token')
   assert.equal(nativeRefreshUrl('https://gw.example.com/hermes'), 'https://gw.example.com/hermes/auth/native/refresh')
+  assert.equal(nativeRevokeUrl('https://gw.example.com/hermes'), 'https://gw.example.com/hermes/api/auth/native/revoke')
 })
 
 // --- loopback callback parsing ---

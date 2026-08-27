@@ -37,6 +37,7 @@ from hermes_cli.dashboard_auth.base import (
     InvalidCodeError,
     InvalidCredentialsError,
     ProviderError,
+    RefreshExpiredError,
 )
 from hermes_cli.dashboard_auth.cookies import (
     clear_pkce_cookie,
@@ -1063,6 +1064,66 @@ async def api_auth_ws_ticket(request: Request):
         ip=_client_ip(request),
     )
     return {"ticket": ticket, "ttl_seconds": TTL_SECONDS}
+
+
+class _NativeRevokeBody(BaseModel):
+    refresh_token: str
+    provider: str
+    user_id: str
+
+
+@router.post("/api/auth/native/revoke", name="auth_native_revoke")
+async def api_auth_native_revoke(request: Request, body: _NativeRevokeBody):
+    """Revoke a desktop refresh token bound to its verified bearer identity."""
+    sess = getattr(request.state, "session", None)
+    if sess is None:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if body.user_id != sess.user_id or body.provider != sess.provider:
+        raise HTTPException(status_code=403, detail="Native logout identity mismatch")
+
+    provider = get_provider(body.provider)
+    if provider is None:
+        raise HTTPException(status_code=403, detail="Native logout identity mismatch")
+
+    try:
+        refreshed = provider.refresh_session(refresh_token=body.refresh_token)
+    except RefreshExpiredError:
+        # Idempotent logout: an already-dead token has the requested state.
+        refreshed = None
+    except Exception as e:  # noqa: BLE001 — outage must not block local logout
+        _log.warning(
+            "dashboard-auth: native revoke validation on %r failed: %s",
+            provider.name,
+            e,
+        )
+        return {"ok": True, "revoked": False}
+
+    if refreshed is not None and (
+        refreshed.user_id != sess.user_id or refreshed.provider != sess.provider
+    ):
+        raise HTTPException(status_code=403, detail="Native logout identity mismatch")
+
+    revoked = True
+    try:
+        if refreshed is not None:
+            provider.revoke_session(
+                refresh_token=refreshed.refresh_token or body.refresh_token
+            )
+    except Exception as e:  # noqa: BLE001 — best-effort/idempotent logout
+        revoked = False
+        _log.warning(
+            "dashboard-auth: native revoke on %r failed: %s",
+            provider.name,
+            e,
+        )
+
+    audit_log(
+        AuditEvent.LOGOUT,
+        provider=sess.provider,
+        user_id=sess.user_id,
+        ip=_client_ip(request),
+    )
+    return {"ok": True, "revoked": revoked}
 
 
 # ---------------------------------------------------------------------------
