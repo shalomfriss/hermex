@@ -5,14 +5,18 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "prebuild": "node ../scripts/ci/check-disk-headroom.mjs",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "fix": "npm run lint:fix",
     "preview": "vite preview",
     "typecheck": "tsc -p . --noEmit",
+    "pretest": "node ../scripts/ci/check-disk-headroom.mjs",
     "test": "vitest run",
+    "pretest:e2e": "node ../scripts/ci/check-disk-headroom.mjs --minimum-gib 12",
     "test:e2e": "npm run build && playwright test --config playwright.config.ts",
+    "precheck": "node ../scripts/ci/check-disk-headroom.mjs",
     "check": "npm run typecheck && npm run test && npm run lint"
   },
   "dependencies": {
