@@ -3543,6 +3543,21 @@ async def get_health():
     return {"ok": True}
 
 
+@app.get("/api/ready")
+async def get_readiness():
+    """Public load-balancer readiness without credentials or host details."""
+    topology = getattr(
+        app.state,
+        "auth_topology",
+        {"status": "ok", "replicas": 1, "routing": "single_replica"},
+    )
+    ready = topology.get("status") == "ok"
+    return JSONResponse(
+        status_code=200 if ready else 503,
+        content={"ok": ready, "topology": topology},
+    )
+
+
 _PROFILE_PLATFORM_STATUS_KEY_RE = re.compile(
     # Profile segment mirrors hermes_cli.profiles._PROFILE_ID_RE.  Platform
     # segment mirrors the Platform enum's normalized values: built-in members
@@ -19248,6 +19263,21 @@ def start_server(
     # uses this to decide whether to refuse the bind, log the gate-on
     # banner, and enable uvicorn proxy_headers.
     app.state.auth_required = should_require_auth(host)
+
+    # Native pending codes and one-shot WS tickets are process-local. Validate
+    # before binding so unsupported multi-worker or unverified multi-replica
+    # deployments fail deterministically instead of intermittently rejecting
+    # callbacks and upgrades on whichever process receives them.
+    from hermes_cli.dashboard_auth.topology import TopologyError, validate_topology
+
+    try:
+        _startup_dashboard_config = load_config().get("dashboard") or {}
+        app.state.auth_topology = validate_topology(
+            _startup_dashboard_config.get("topology") or {}
+        )
+    except TopologyError as exc:
+        app.state.auth_topology = {"status": "degraded", "detail": str(exc)}
+        raise SystemExit(f"Refusing unsafe dashboard deployment topology: {exc}") from exc
 
     # ``--insecure`` no longer disables the auth gate (June 2026 hardening:
     # the hermes-0day MCP-persistence campaign abused unauthenticated public

@@ -121,13 +121,19 @@ export function ChatSidebar({
   // counter is the dependency on purpose — it's not read in the memo body,
   // it's the signal that says "rebuild the client".
   const [version, setVersion] = useState(0);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const gw = useMemo(() => new GatewayClient(), [version]);
 
   const [state, setState] = useState<ConnectionState>("idle");
   const [info, setInfo] = useState<SessionInfo>({});
   const [modelOpen, setModelOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const gw = useMemo(
+    () =>
+      new GatewayClient((code) =>
+        setError(`dashboard access denied (${code}) — sign in with an authorized account`),
+      ),
+    [version],
+  );
   // The badge shows config.yaml's main model (`model.default`) via
   // `/api/model/info` — the same value the Models page writes and a new chat
   // session boots from. We deliberately don't use the sidecar's `session.info`

@@ -248,8 +248,22 @@ Terminate TLS before traffic reaches an internet-facing dashboard and preserve t
 - Set `dashboard.public_url` to the complete external URL when the proxy chain cannot preserve those values reliably.
 - Do not cache `/auth/*`, `/api/auth/*`, WebSocket upgrades, or responses that set cookies.
 - Preserve `Set-Cookie` attributes and paths. Do not rewrite secure cookies to plaintext HTTP.
-- Allow WebSocket upgrades and keep idle timeouts long enough for dashboard sessions.
-- Use sticky routing or shared provider/session state when a load balancer fans out to multiple dashboard processes. Native authorization codes and WebSocket tickets are short-lived, process-local state.
+- Allow WebSocket upgrades for `/api/events`, `/api/ws`, `/api/pty`, and `/api/console`. Set the proxy idle timeout above the dashboard ping interval plus timeout (20s + 20s by default); 60s is the practical minimum and 120s leaves headroom for scheduling stalls.
+- Native authorization codes and WebSocket tickets are short-lived, process-local state. The default supported topology is one process and one replica. Never launch uvicorn/gunicorn with multiple workers.
+- Multiple replicas require verified sticky routing that binds a browser's REST requests and all four WebSocket surfaces to the same replica, including reconnects. Configure the declared replica count and verification only after testing that behavior:
+
+```yaml
+dashboard:
+  topology:
+    replicas: 2
+    state_backend: process_local
+    sticky_routing_verified: true
+    native_flow_affinity_verified: true
+```
+
+For native Desktop sign-in, ordinary browser-cookie affinity is insufficient: the system-browser callback creates a pending code, then the Desktop process redeems it in a separate request with no browser cookie. `native_flow_affinity_verified` attests that the proxy policy (for example, a tested source-affinity rule) sends both requests to the same replica. Do not set it based only on browser login testing.
+
+Hermes refuses startup when `WEB_CONCURRENCY` or `UVICORN_WORKERS` exceeds one, when an unsupported shared-state backend is named, or when multiple replicas are declared without both routing verifications. `GET /api/ready` returns 503 for a degraded topology; use it for load-balancer readiness. `hermes dashboard sso check` validates the same contract before deployment.
 - Keep system clocks synchronized; token expiry, nonce state, and maximum authentication age depend on time.
 
 A minimal nginx location behind TLS resembles:
@@ -300,7 +314,7 @@ Hermes honors IdP token expiration. Admission policy is evaluated from the signe
 
 ### Audit log
 
-Dashboard auth events are JSON lines in `$HERMES_HOME/logs/dashboard-auth.log`. Access denials record the provider and a stable policy reason such as `group_required` or `tenant_denied`; users receive only a generic forbidden response. Token-like fields, authorization codes, verifiers, nonces, authorization headers, secrets, and raw claims are redacted or excluded.
+Dashboard auth events are JSON lines in `$HERMES_HOME/logs/dashboard-auth.log`. The active file is created owner-only (`0600`), capped at 10 MiB, and rotated through five retained backups. A single oversized attacker-controlled event is replaced by a bounded truncation marker. Audit disk-full, permission, or rotation failures are warning-throttled and never break authentication. Access denials record the provider and a stable policy reason such as `group_required` or `tenant_denied`; users receive only a generic forbidden response. Token-like fields, authorization codes, verifiers, nonces, authorization headers, secrets, passwords, and raw claims are recursively redacted or excluded.
 
 Forward the file to your normal protected log pipeline if required. Restrict file access because verified identity metadata may be present.
 

@@ -55,16 +55,46 @@ describe("maybeReloadForLoopbackWsAuthFailure", () => {
     expect(reload).toHaveBeenCalledTimes(1);
   });
 
-  it("does not reload in gated mode or for other close codes", () => {
+  it("does not reload for non-auth close codes", () => {
     const storage = makeStorage();
     const reload = vi.fn();
 
     expect(
-      maybeReloadForLoopbackWsAuthFailure(4401, true, storage, reload),
-    ).toBe(false);
-    expect(
-      maybeReloadForLoopbackWsAuthFailure(4403, false, storage, reload),
+      maybeReloadForLoopbackWsAuthFailure(1006, false, storage, reload),
     ).toBe(false);
     expect(reload).not.toHaveBeenCalled();
+  });
+
+  it("transitions gated 4401 closes to reauthentication without reload", () => {
+    const reload = vi.fn();
+    const reauth = vi.fn();
+
+    expect(
+      maybeReloadForLoopbackWsAuthFailure(
+        4401,
+        true,
+        makeStorage(),
+        reload,
+        reauth,
+      ),
+    ).toBe(true);
+    expect(reauth).toHaveBeenCalledTimes(1);
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it.each([4403, 4408])("transitions %s closes to denial UX", (code) => {
+    const denied = vi.fn();
+
+    expect(
+      maybeReloadForLoopbackWsAuthFailure(
+        code,
+        true,
+        makeStorage(),
+        vi.fn(),
+        vi.fn(),
+        denied,
+      ),
+    ).toBe(false);
+    expect(denied).toHaveBeenCalledWith(code);
   });
 });

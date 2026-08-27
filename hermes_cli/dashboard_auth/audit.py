@@ -16,12 +16,23 @@ import enum
 import json
 import logging
 import os
+import re
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
 _log = logging.getLogger(__name__)
 _write_lock = threading.Lock()
+
+# Bound attacker-triggerable public-auth failures on disk. Rotation is kept in
+# this leaf module rather than logging.handlers so creation mode and every
+# rename stay under the same lock on all supported platforms.
+MAX_LOG_BYTES = 10 * 1024 * 1024
+BACKUP_COUNT = 5
+MAX_RECORD_BYTES = 64 * 1024
+_WRITE_WARNING_INTERVAL_SECONDS = 60.0
+_last_write_warning_at: float | None = None
 
 # Field names that must never appear in the log raw. Any kwarg matching
 # these is silently dropped.
@@ -30,6 +41,92 @@ _REDACTED_FIELDS: frozenset = frozenset({
     "state", "ticket", "cookie", "Authorization", "authorization",
     "nonce", "raw_claims", "claims", "client_secret",
 })
+
+_REDACTED_FIELDS_LOWER = frozenset(name.lower() for name in _REDACTED_FIELDS) | {
+    "id_token", "client_secret", "password", "nonce", "raw_claims",
+}
+_REDACTED_FIELDS_COMPACT = frozenset(
+    re.sub(r"[^a-z0-9]", "", name) for name in _REDACTED_FIELDS_LOWER
+)
+
+
+def _is_secret_field(name: object) -> bool:
+    if not isinstance(name, str):
+        return False
+    lowered = name.lower()
+    compact = re.sub(r"[^a-z0-9]", "", lowered)
+    return (
+        lowered in _REDACTED_FIELDS_LOWER
+        or compact in _REDACTED_FIELDS_COMPACT
+        or compact.endswith(("token", "secret", "password", "cookie"))
+    )
+
+
+def _redact(value: Any) -> Any:
+    """Drop secret-bearing keys recursively while preserving audit context."""
+    if isinstance(value, dict):
+        return {
+            key: _redact(item)
+            for key, item in value.items()
+            if not _is_secret_field(key)
+        }
+    if isinstance(value, (list, tuple)):
+        return [_redact(item) for item in value]
+    return value
+
+
+def _rotate_locked(path: Path, incoming_bytes: int) -> None:
+    try:
+        # Repair legacy permissive files before either retaining or appending.
+        path.chmod(0o600)
+        current_size = path.stat().st_size
+    except FileNotFoundError:
+        return
+    if current_size + incoming_bytes <= MAX_LOG_BYTES:
+        return
+    oldest = path.with_name(f"{path.name}.{BACKUP_COUNT}")
+    oldest.unlink(missing_ok=True)
+    for index in range(BACKUP_COUNT - 1, 0, -1):
+        source = path.with_name(f"{path.name}.{index}")
+        if source.exists():
+            source.chmod(0o600)
+            source.replace(path.with_name(f"{path.name}.{index + 1}"))
+    if BACKUP_COUNT > 0:
+        path.replace(path.with_name(f"{path.name}.1"))
+    else:
+        path.unlink(missing_ok=True)
+
+
+def _append_owner_only(path: Path, payload: bytes) -> None:
+    flags = os.O_APPEND | os.O_CREAT | os.O_WRONLY | getattr(os, "O_BINARY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags, 0o600)
+    try:
+        try:
+            os.fchmod(fd, 0o600)
+        except (AttributeError, OSError):
+            # Native Windows does not expose meaningful POSIX owner bits.
+            pass
+        view = memoryview(payload)
+        while view:
+            written = os.write(fd, view)
+            if written <= 0:
+                raise OSError("short audit-log write")
+            view = view[written:]
+    finally:
+        os.close(fd)
+
+
+def _warn_write_failure(exc: Exception) -> None:
+    global _last_write_warning_at
+    now = time.monotonic()
+    if (
+        _last_write_warning_at is not None
+        and now - _last_write_warning_at < _WRITE_WARNING_INTERVAL_SECONDS
+    ):
+        return
+    _last_write_warning_at = now
+    _log.warning("dashboard-auth audit log write failed: %s", exc)
 
 
 class AuditEvent(enum.Enum):
@@ -77,21 +174,28 @@ def audit_log(event: AuditEvent, **fields: Any) -> None:
     Write failures are logged at WARNING but never raise — auth must not
     fail because the audit logger broke.
     """
-    safe_fields = {
-        k: v for k, v in fields.items()
-        if k not in _REDACTED_FIELDS
-    }
+    safe_fields = _redact(fields)
     entry = {
         "ts": _dt.datetime.now(_dt.timezone.utc).isoformat(),
         "event": event.value,
         **safe_fields,
     }
     line = json.dumps(entry, separators=(",", ":")) + "\n"
+    payload = line.encode("utf-8")
+    record_limit = min(MAX_RECORD_BYTES, MAX_LOG_BYTES)
+    if len(payload) > record_limit:
+        payload = (
+            json.dumps(
+                {"ts": entry["ts"], "event": event.value, "truncated": True},
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
     path = _resolve_log_path()
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
         with _write_lock:
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(line)
+            path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+            _rotate_locked(path, len(payload))
+            _append_owner_only(path, payload)
     except Exception as e:
-        _log.warning("dashboard-auth audit log write failed: %s", e)
+        _warn_write_failure(e)

@@ -12,6 +12,27 @@ function reloadDashboardWindow(): void {
   }
 }
 
+export function redirectDashboardToLogin(loginUrl?: string): void {
+  if (typeof window === "undefined") return;
+  const base = (window.__HERMES_BASE_PATH__ ?? "").replace(/\/$/, "");
+  const next = `${window.location.pathname}${window.location.search}`;
+  try {
+    window.sessionStorage.setItem("hermes.lastLocation", next);
+  } catch {
+    /* privacy mode / blocked storage — best effort */
+  }
+  window.location.assign(
+    loginUrl || `${base}/login?next=${encodeURIComponent(next)}`,
+  );
+}
+
+function noteDashboardAuthDenial(code: number): void {
+  // Surface-specific callers render the denial (PTY banner, events banner,
+  // console line). This callback seam keeps the classification testable and
+  // lets embedders add their own notice without turning denial into a reload.
+  void code;
+}
+
 function dashboardSessionStorage(): StorageLike | null {
   if (typeof window === "undefined") return null;
   try {
@@ -61,9 +82,19 @@ export function maybeReloadForLoopbackWsAuthFailure(
   authRequired = dashboardAuthRequired(),
   storage: StorageLike | null = dashboardSessionStorage(),
   reload: () => void = reloadDashboardWindow,
+  reauth: () => void = () => redirectDashboardToLogin(),
+  denied: (code: number) => void = noteDashboardAuthDenial,
 ): boolean {
-  if (authRequired || code !== 4401) {
+  if (code === 4403 || code === 4408) {
+    denied(code);
     return false;
+  }
+  if (code !== 4401) {
+    return false;
+  }
+  if (authRequired) {
+    reauth();
+    return true;
   }
   return attemptDashboardTokenReloadOnce(storage, reload);
 }

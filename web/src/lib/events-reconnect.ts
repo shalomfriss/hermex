@@ -14,8 +14,8 @@ export const EVENTS_CONNECT_TIMEOUT_MS = 15_000;
 
 /** Normal closure — the server said goodbye, don't chase it. */
 const WS_CLOSE_NORMAL = 1000;
-/** Ticket rejected / forbidden: retrying just burns tickets, user must reload. */
-const WS_CLOSE_AUTH_CODES = new Set([4401, 4403]);
+/** Ticket rejected / forbidden: retrying burns tickets; transition auth UX. */
+const WS_CLOSE_AUTH_CODES = new Set([4401, 4403, 4408]);
 
 /**
  * Exponential backoff, 1s → 2s → 4s → … → 30s cap.
@@ -63,7 +63,9 @@ export function eventsReconnectingMessage(delayMs: number): string {
 }
 
 export function eventsRejectedMessage(code: number): string {
-  return `events feed rejected (${code}) — reload the page`;
+  return code === 4401
+    ? "events feed authentication expired — sign in again"
+    : `events feed access denied (${code})`;
 }
 
 export function eventsGaveUpMessage(): string {
