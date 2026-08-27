@@ -39,6 +39,8 @@ class OIDCState:
     groups: list[str] = field(default_factory=lambda: ["hermes-admins"])
     codes: dict[str, dict[str, str]] = field(default_factory=dict)
     revoked: list[str] = field(default_factory=list)
+    active_refresh_tokens: set[str] = field(default_factory=set)
+    refresh_generation: int = 0
 
     def mint(self, *, nonce: str = "", mode: str = "ok") -> str:
         now = int(time.time())
@@ -135,7 +137,19 @@ class OIDCHandler(http.server.BaseHTTPRequestHandler):
                     self._json(400, {"error": "invalid_grant"})
                     return
                 token = state.mint(nonce=record["nonce"], mode=record["mode"])
+                refresh_token = "refresh-enterprise-user-1"
+                state.active_refresh_tokens.add(refresh_token)
             elif grant == "refresh_token":
+                previous = form.get("refresh_token", [""])[0]
+                if previous not in state.active_refresh_tokens:
+                    self._json(400, {"error": "invalid_grant"})
+                    return
+                state.active_refresh_tokens.remove(previous)
+                state.refresh_generation += 1
+                refresh_token = (
+                    f"refresh-enterprise-user-1-{state.refresh_generation}"
+                )
+                state.active_refresh_tokens.add(refresh_token)
                 token = state.mint()
             else:
                 self._json(400, {"error": "unsupported_grant_type"})
@@ -145,12 +159,14 @@ class OIDCHandler(http.server.BaseHTTPRequestHandler):
                 {
                     "id_token": token,
                     "token_type": "Bearer",
-                    "refresh_token": "refresh-enterprise-user-1",
+                    "refresh_token": refresh_token,
                 },
             )
             return
         if self.path == "/revoke":
-            state.revoked.append(form.get("token", [""])[0])
+            refresh_token = form.get("token", [""])[0]
+            state.active_refresh_tokens.discard(refresh_token)
+            state.revoked.append(refresh_token)
             self._json(200, {})
             return
         self._json(404, {"error": "not_found"})
@@ -320,14 +336,19 @@ def test_refresh_group_removal_denies_and_provider_outage_is_503(oidc_app):
     refresh_binding = client.cookies.get(
         _resolved_name(SESSION_PROVIDER_COOKIE, use_https=True, prefix="")
     )
+    access_token = client.cookies.get(
+        _resolved_name(SESSION_AT_COOKIE, use_https=True, prefix="")
+    )
     assert refresh_token
     assert refresh_binding
+    assert access_token
 
     oidc.state.groups = ["viewers"]
     denied = client.post(
         "/auth/native/refresh",
         json={
             "provider": "self-hosted",
+            "access_token": access_token,
             "refresh_token": refresh_token,
             "refresh_binding": refresh_binding,
         },
@@ -358,7 +379,7 @@ def test_refresh_group_removal_denies_and_provider_outage_is_503(oidc_app):
 
 
 def test_real_http_desktop_native_flow_is_cookie_free(oidc_app):
-    _oidc, _provider, client = oidc_app
+    oidc, _provider, client = oidc_app
     verifier = base64.urlsafe_b64encode(b"desktop-verifier-material-0123456789abcdef").rstrip(b"=").decode()
     challenge = base64.urlsafe_b64encode(
         hashlib.sha256(verifier.encode()).digest()
@@ -396,3 +417,43 @@ def test_real_http_desktop_native_flow_is_cookie_free(oidc_app):
     )
     assert me.status_code == 200
     assert me.json()["user_id"] == "enterprise-user-1"
+
+    refreshed = client.post(
+        "/auth/native/refresh",
+        json={
+            "provider": "self-hosted",
+            "access_token": tokens["access_token"],
+            "refresh_token": tokens["refresh_token"],
+            "refresh_binding": tokens["refresh_binding"],
+        },
+    )
+    assert refreshed.status_code == 200, refreshed.text
+    rotated = refreshed.json()
+    assert rotated["user_id"] == tokens["user_id"]
+    assert rotated["refresh_token"] != tokens["refresh_token"]
+
+    replay = client.post(
+        "/auth/native/refresh",
+        json={
+            "provider": "self-hosted",
+            "access_token": tokens["access_token"],
+            "refresh_token": tokens["refresh_token"],
+            "refresh_binding": tokens["refresh_binding"],
+        },
+    )
+    assert replay.status_code == 401
+    assert replay.json()["error"] == "session_expired"
+
+    revoked = client.post(
+        "/api/auth/native/revoke",
+        headers={"Authorization": f"Bearer {rotated['access_token']}"},
+        json={
+            "refresh_token": rotated["refresh_token"],
+            "refresh_binding": rotated["refresh_binding"],
+            "provider": rotated["provider"],
+            "user_id": rotated["user_id"],
+        },
+    )
+    assert revoked.status_code == 200, revoked.text
+    assert revoked.json() == {"ok": True, "revoked": True}
+    assert oidc.state.revoked[-1] not in oidc.state.active_refresh_tokens

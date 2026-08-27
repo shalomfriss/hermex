@@ -202,11 +202,7 @@ import {
   resolveOauthRequestAuth,
   resolveReadinessProbeAuth
 } from './native-auth-decisions'
-import {
-  nativeRefreshUrl,
-  type NativeTokenSet,
-  resolveLoginStrategy
-} from './native-oauth'
+import { nativeRefreshUrl, type NativeTokenSet, resolveLoginStrategy } from './native-oauth'
 import { runNativeLogin } from './native-oauth-login'
 import { runNativeLogout } from './native-oauth-logout'
 import { ensureNativeAccessTokenWith } from './native-token-refresh'
@@ -7466,8 +7462,7 @@ function readGatewayErrorText(res): Promise<string> {
 }
 
 async function gatedFileAuth(connection) {
-  const nativeAt =
-    connection.authMode === 'oauth' ? await ensureNativeAccessToken(connection.baseUrl) : null
+  const nativeAt = connection.authMode === 'oauth' ? await ensureNativeAccessToken(connection.baseUrl) : null
 
   return resolveGatedDownloadAuth(connection.authMode, nativeAt, connection.token)
 }
@@ -13224,14 +13219,18 @@ ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, rawUrl) =
 
   if (baseUrl) {
     nativeLogout = await runNativeLogout(baseUrl, _loadNativeTokens(baseUrl), {
-      revoke: async request => {
-        await fetchJson(request.url, null, {
+      refreshTokens: async () => {
+        await ensureNativeAccessToken(baseUrl)
+
+        return _loadNativeTokens(baseUrl)
+      },
+      revoke: request =>
+        fetchJson(request.url, null, {
           method: 'POST',
           body: request.body,
           bearer: request.bearer,
           timeoutMs: 10_000
-        })
-      },
+        }),
       clearLocal: () => _clearNativeTokens(baseUrl)
     })
 

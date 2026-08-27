@@ -238,7 +238,9 @@ class DashboardAuthProvider(ABC):
     ) -> Session: ...
 
     @abstractmethod
-    def revoke_session(self, *, refresh_token: str) -> None: ...
+    def revoke_session(self, *, refresh_token: str) -> bool | None:
+        """Best-effort revoke; ``False`` explicitly reports remote failure."""
+        ...
 
     def complete_password_login(
         self, *, username: str, password: str

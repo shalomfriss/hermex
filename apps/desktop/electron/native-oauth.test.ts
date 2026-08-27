@@ -173,6 +173,7 @@ test('parseTokenResponse maps a well-formed body', () => {
   const t = parseTokenResponse({
     access_token: 'AT',
     refresh_token: 'RT',
+    refresh_binding: 'binding-v1',
     token_type: 'Bearer',
     expires_at: 1893456000,
     provider: 'nous',
@@ -181,6 +182,7 @@ test('parseTokenResponse maps a well-formed body', () => {
 
   assert.equal(t.accessToken, 'AT')
   assert.equal(t.refreshToken, 'RT')
+  assert.equal(t.refreshBinding, 'binding-v1')
   assert.equal(t.expiresAt, 1893456000)
   assert.equal(t.provider, 'nous')
   assert.equal(t.userId, 'u-1')
@@ -201,6 +203,7 @@ test('parseStoredTokenSet maps the encrypted on-disk camelCase shape', () => {
   const t = parseStoredTokenSet({
     accessToken: 'AT-stored',
     refreshToken: 'RT-stored',
+    refreshBinding: 'binding-stored',
     expiresAt: 1893456000,
     provider: 'self-hosted',
     userId: 'u-stored'
@@ -208,6 +211,7 @@ test('parseStoredTokenSet maps the encrypted on-disk camelCase shape', () => {
 
   assert.equal(t.accessToken, 'AT-stored')
   assert.equal(t.refreshToken, 'RT-stored')
+  assert.equal(t.refreshBinding, 'binding-stored')
   assert.equal(t.expiresAt, 1893456000)
   assert.equal(t.provider, 'self-hosted')
   assert.equal(t.userId, 'u-stored')

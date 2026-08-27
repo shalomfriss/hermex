@@ -28,6 +28,7 @@ const GATEWAY = 'https://gw.example.com'
 const TOKENS: NativeTokenSet = {
   accessToken: 'AT-live-abc123',
   refreshToken: 'RT-live-xyz789',
+  refreshBinding: 'v1.binding-live',
   expiresAt: 1_893_456_000,
   provider: 'nous',
   userId: 'u-42'
@@ -104,6 +105,7 @@ test('a fresh load restores both tokens and preserves expiry, provider and user'
 
   assert.equal(loaded.accessToken, 'AT-live-abc123')
   assert.equal(loaded.refreshToken, 'RT-live-xyz789')
+  assert.equal(loaded.refreshBinding, 'v1.binding-live')
   // Still a number after the JSON round trip, not "1893456000".
   assert.equal(loaded.expiresAt, 1_893_456_000)
   assert.equal(typeof loaded.expiresAt, 'number')
@@ -146,6 +148,7 @@ test('the full login-to-restart sequence keeps the two parser boundaries apart',
   const fromGateway = parseTokenResponse({
     access_token: 'AT-fresh',
     refresh_token: 'RT-fresh',
+    refresh_binding: 'v1.binding-fresh',
     expires_at: 1_893_456_789,
     provider: 'nous',
     user_id: 'u-77'
