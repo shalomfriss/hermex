@@ -353,6 +353,39 @@ def test_api_auth_me_requires_auth(gated_app):
     assert r.status_code == 401
 
 
+def test_provider_bootstrap_exposes_only_safe_authorization_metadata(gated_app):
+    import plugins.dashboard_auth.self_hosted as oidc_plugin
+
+    clear_providers()
+    register_provider(
+        oidc_plugin.SelfHostedOIDCProvider(
+            issuer="https://idp.example.com",
+            client_id="hermes-dashboard",
+            authorization={
+                "allowed_email_domains": ["secret-customer.example"],
+                "required_groups": ["secret-admin-group"],
+            },
+        )
+    )
+
+    response = gated_app.get("/api/auth/providers")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "providers": [
+            {
+                "name": "self-hosted",
+                "display_name": "Self-Hosted OIDC",
+                "supports_password": False,
+                "auth_type": "oidc",
+                "policy_enforced": True,
+            }
+        ]
+    }
+    assert "secret-customer.example" not in response.text
+    assert "secret-admin-group" not in response.text
+
+
 # ---------------------------------------------------------------------------
 # Zero-providers fail-closed
 # ---------------------------------------------------------------------------

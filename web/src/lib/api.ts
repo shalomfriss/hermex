@@ -40,6 +40,18 @@ declare global {
 }
 const SESSION_HEADER = "X-Hermes-Session-Token";
 
+export class ApiError extends Error {
+  readonly status: number;
+  readonly body: unknown;
+
+  constructor(status: number, text: string, body: unknown = null) {
+    super(`${status}: ${text}`);
+    this.name = "ApiError";
+    this.status = status;
+    this.body = body;
+  }
+}
+
 function setSessionHeader(headers: Headers, token: string): void {
   if (!headers.has(SESSION_HEADER)) {
     headers.set(SESSION_HEADER, token);
@@ -177,7 +189,13 @@ export async function fetchJSON<T>(
   }
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
-    throw new Error(`${res.status}: ${text}`);
+    let body: unknown = null;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      // Non-JSON errors still retain their status and text.
+    }
+    throw new ApiError(res.status, text, body);
   }
   return res.json();
 }
