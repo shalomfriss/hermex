@@ -460,6 +460,51 @@ class TestCompleteLogin:
                     redirect_uri="https://hermes.fly.dev/auth/callback",
                 )
 
+    def test_upstream_error_body_never_reaches_provider_exception(self, provider):
+        reflected = (
+            "client_secret=client-secret-canary&"
+            "refresh_token=refresh-token-canary&"
+            "access_token=access-token-canary&"
+            "id_token=id-token-canary&code=authorization-code-canary&"
+            "cookie=session-cookie-canary\nline-two\r\x1b[31mcontrol-canary"
+        )
+        mock_resp = self._mock_post(502, reflected, ctype="text/plain")
+        mock_resp.text = reflected
+
+        with patch("plugins.dashboard_auth.nous.httpx.post", return_value=mock_resp):
+            with pytest.raises(ProviderError) as excinfo:
+                provider.complete_login(
+                    code="x", state="s", code_verifier="v",
+                    redirect_uri="https://hermes.fly.dev/auth/callback",
+                )
+
+        message = str(excinfo.value)
+        assert "502" in message
+        assert len(message) <= 200
+        for canary in (
+            "client-secret-canary",
+            "refresh-token-canary",
+            "access-token-canary",
+            "id-token-canary",
+            "authorization-code-canary",
+            "session-cookie-canary",
+            "control-canary",
+        ):
+            assert canary not in message
+
+    def test_upstream_oauth_error_code_is_allowlisted(self, provider):
+        reflected = "client-secret-canary\nrefresh-token-canary\x1b[31m"
+        mock_resp = self._mock_post(400, {"error": reflected})
+
+        with patch("plugins.dashboard_auth.nous.httpx.post", return_value=mock_resp):
+            with pytest.raises(InvalidCodeError) as excinfo:
+                provider.complete_login(
+                    code="bad", state="s", code_verifier="v",
+                    redirect_uri="https://hermes.fly.dev/auth/callback",
+                )
+
+        assert str(excinfo.value) == "Portal rejected token request: provider_error"
+
     def test_missing_access_token_raises(self, provider):
         mock_resp = self._mock_post(200, {"token_type": "Bearer"})
         with patch("plugins.dashboard_auth.nous.httpx.post", return_value=mock_resp):

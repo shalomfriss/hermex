@@ -34,6 +34,7 @@ from hermes_cli.dashboard_auth.base import (
     DashboardAuthProvider,
     ProviderError,
     RefreshExpiredError,
+    log_provider_failure,
 )
 from hermes_cli.dashboard_auth.cookies import (
     clear_sso_attempt_cookie,
@@ -226,13 +227,18 @@ h1{{font-size:clamp(2rem,8vw,3rem);line-height:1.1;margin:0 0 1rem;color:#ffbf3f
     return response
 
 
-def provider_outage_response(request: Request, provider: str) -> Response:
+def provider_outage_response(
+    request: Request,
+    provider: str,
+    *,
+    error: BaseException | None = None,
+) -> Response:
     """Return a retryable outage without exposing provider internals."""
-    reference_id = f"AUTH-{secrets.token_hex(4).upper()}"
-    _log.warning(
-        "dashboard-auth: provider %r unavailable (reference %s)",
-        provider,
-        reference_id,
+    reference_id = log_provider_failure(
+        _log,
+        provider=provider,
+        operation="request",
+        error=error or ProviderError(),
     )
     detail = "The sign-in provider is temporarily unavailable."
     path = request.url.path
@@ -401,7 +407,7 @@ def _verify_bearer(request: Request, *, access_token: str):
     Unlike the cookie path there is no server-side refresh — the desktop owns
     its refresh token and rotates via ``/auth/native/refresh``.
     """
-    unreachable_provider: str | None = None
+    unreachable_error: ProviderError | None = None
     for provider in list_session_providers():
         try:
             session = provider.verify_session(access_token=access_token)
@@ -409,20 +415,23 @@ def _verify_bearer(request: Request, *, access_token: str):
             e.provider = provider.name
             raise
         except ProviderError as e:
-            _log.warning(
-                "dashboard-auth: provider %r unreachable during bearer verify: %s",
-                provider.name, e,
+            e.provider = provider.name
+            log_provider_failure(
+                _log,
+                provider=provider.name,
+                operation="bearer_verify",
+                error=e,
             )
-            if unreachable_provider is None:
-                unreachable_provider = provider.name
+            if unreachable_error is None:
+                unreachable_error = e
             continue
         if session is not None:
             return session
-    if unreachable_provider is not None:
+    if unreachable_error is not None:
         # Signal transient outage to the caller via a sentinel exception the
         # middleware turns into 503. Raising keeps the "don't logout on a
         # flaky IDP" contract identical to the cookie path.
-        raise ProviderError(unreachable_provider)
+        raise unreachable_error
     return None
 
 
@@ -479,7 +488,7 @@ async def gated_auth_middleware(
         except ProviderError as e:
             # At least one provider's IDP/JWKS was unreachable and none
             # verified the token — transient outage, not bad credentials.
-            return provider_outage_response(request, str(e))
+            return provider_outage_response(request, e.provider, error=e)
         if bearer_session is not None:
             request.state.session = bearer_session
             return await call_next(request)
@@ -535,6 +544,7 @@ async def gated_auth_middleware(
         # 503 — distinguishing "transient IDP outage" (don't force re-login)
         # from "token genuinely invalid" (fall through to refresh/relogin).
         unreachable_provider: str | None = None
+        unreachable_error: ProviderError | None = None
         for provider in _ordered_session_providers(refresh_owner):
             try:
                 session = provider.verify_session(access_token=at)
@@ -546,9 +556,12 @@ async def gated_auth_middleware(
                     clear_cookies=True,
                 )
             except ProviderError as e:
-                _log.warning(
-                    "dashboard-auth: provider %r unreachable during verify: %s",
-                    provider.name, e,
+                e.provider = provider.name
+                log_provider_failure(
+                    _log,
+                    provider=provider.name,
+                    operation="session_verify",
+                    error=e,
                 )
                 audit_log(
                     AuditEvent.SESSION_VERIFY_FAILURE,
@@ -558,6 +571,7 @@ async def gated_auth_middleware(
                 )
                 if unreachable_provider is None:
                     unreachable_provider = provider.name
+                    unreachable_error = e
                 continue
             if session is not None:
                 break
@@ -565,7 +579,9 @@ async def gated_auth_middleware(
             # No provider could verify the token and at least one couldn't be
             # reached — treat as a transient outage rather than forcing a
             # re-login through a (possibly also-unreachable) refresh.
-            return provider_outage_response(request, unreachable_provider)
+            return provider_outage_response(
+                request, unreachable_provider, error=unreachable_error
+            )
 
     if session is None:
         # Access token is expired/invalid. Before forcing re-login, try to
@@ -585,10 +601,10 @@ async def gated_auth_middleware(
                 request, error=e, clear_cookies=True
             )
         except ProviderError as e:
-            # At least one provider could not confirm or reject the RT, and no
-            # other provider refreshed it. Preserve the cookies and surface a
-            # transient outage instead of turning uncertainty into a logout.
-            return provider_outage_response(request, str(e))
+            # The bound provider could not confirm or reject the RT. Preserve
+            # the cookies and surface a transient outage instead of turning
+            # uncertainty into a logout.
+            return provider_outage_response(request, e.provider, error=e)
         if refreshed is not None:
             new_session, refreshing_provider = refreshed
             return await _serve_refreshed_session(
@@ -788,9 +804,12 @@ def _attempt_refresh(
         )
         return None
     except ProviderError as e:
-        _log.warning(
-            "dashboard-auth: provider %r unreachable during refresh: %s",
-            provider.name, e,
+        e.provider = provider.name
+        log_provider_failure(
+            _log,
+            provider=provider.name,
+            operation="refresh",
+            error=e,
         )
         audit_log(
             AuditEvent.REFRESH_FAILURE,
@@ -798,7 +817,7 @@ def _attempt_refresh(
             reason="provider_unreachable",
             ip=_client_ip(request),
         )
-        raise ProviderError(provider.name) from e
+        raise
     _mark_identity_refreshed(
         access_token,
         expires_at=int(new_session.expires_at),

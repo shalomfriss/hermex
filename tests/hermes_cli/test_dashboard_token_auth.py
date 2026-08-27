@@ -9,6 +9,7 @@ behaviour.
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Optional
 
 import pytest
@@ -202,12 +203,20 @@ def test_authenticate_token_unreachable_then_valid_provider_wins():
     assert unreachable is None
 
 
-def test_authenticate_token_buggy_provider_does_not_crash():
+def test_authenticate_token_buggy_provider_does_not_crash(caplog, monkeypatch):
+    reflected_secret = "client-secret-canary\nrefresh-token-canary\x1b[31m"
     register_provider(_BuggyTokenProvider())
     register_provider(_TokenProvider(secret="good"))
     req = _FakeRequest(headers={"authorization": "Bearer good"})
-    principal, unreachable = token_auth.authenticate_token(req)
+    monkeypatch.setattr(
+        _BuggyTokenProvider,
+        "verify_token",
+        lambda self, *, token: (_ for _ in ()).throw(RuntimeError(reflected_secret)),
+    )
+    with caplog.at_level("WARNING"):
+        principal, unreachable = token_auth.authenticate_token(req)
     assert principal is not None and principal.provider == "tok"
+    assert reflected_secret not in caplog.text
 
 
 # --------------------------------------------------------------------------
@@ -233,5 +242,34 @@ def test_seam_rejects_wrong_token_401():
     )
     resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
     assert resp.status_code == 401
+
+
+def test_seam_unreachable_503_reuses_safe_log_reference(caplog, monkeypatch):
+    reflected_secret = "client-secret-canary\nrefresh-token-canary\x1b[31m"
+    provider = _UnreachableTokenProvider()
+    error = ProviderError(
+        reflected_secret, classification="backing_store_unreachable"
+    )
+    monkeypatch.setattr(
+        provider,
+        "verify_token",
+        lambda *, token: (_ for _ in ()).throw(error),
+    )
+    register_provider(provider)
+    token_auth.register_token_route("/api/gateway/drain")
+    req = _FakeRequest(
+        path="/api/gateway/drain", headers={"authorization": "Bearer presented"}
+    )
+
+    with caplog.at_level("WARNING"):
+        resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+
+    response_body = bytes(resp.body)
+    body = json.loads(response_body)
+    assert resp.status_code == 503
+    assert body["reference_id"] == error.reference_id
+    assert error.reference_id in caplog.text
+    assert reflected_secret not in caplog.text
+    assert reflected_secret not in response_body.decode()
 
 

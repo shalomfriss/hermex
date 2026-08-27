@@ -459,6 +459,52 @@ class TestCompleteLogin:
                     redirect_uri="https://hermes.example/auth/callback",
                 )
 
+    def test_upstream_error_body_never_reaches_provider_exception(self, provider):
+        reflected = {
+            "client_secret": "client-secret-canary",
+            "refresh_token": "refresh-token-canary",
+            "access_token": "access-token-canary",
+            "id_token": "id-token-canary",
+            "code": "authorization-code-canary",
+            "cookie": "session-cookie-canary",
+            "detail": "line-one\nline-two\r\x1b[31mcontrol-canary",
+        }
+        mock_resp = _mock_post(502, reflected)
+
+        with patch(
+            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+        ):
+            with pytest.raises(ProviderError) as excinfo:
+                provider.complete_login(
+                    code="x",
+                    state="s",
+                    code_verifier="v",
+                    redirect_uri="https://hermes.example/auth/callback",
+                )
+
+        message = str(excinfo.value)
+        assert "502" in message
+        assert len(message) <= 200
+        for value in reflected.values():
+            assert value not in message
+
+    def test_upstream_oauth_error_code_is_allowlisted(self, provider):
+        reflected = "client-secret-canary\nrefresh-token-canary\x1b[31m"
+        mock_resp = _mock_post(400, {"error": reflected})
+
+        with patch(
+            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+        ):
+            with pytest.raises(InvalidCodeError) as excinfo:
+                provider.complete_login(
+                    code="bad",
+                    state="s",
+                    code_verifier="v",
+                    redirect_uri="https://hermes.example/auth/callback",
+                )
+
+        assert str(excinfo.value) == "IDP rejected token request: provider_error"
+
     def test_matching_nonce_is_accepted(self, provider, rsa_keypair):
         id_token = _mint_id_token(
             rsa_keypair, extra_claims={"nonce": "expected-nonce"}

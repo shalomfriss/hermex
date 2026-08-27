@@ -47,7 +47,11 @@ from fastapi.responses import JSONResponse, Response
 
 from hermes_cli.dashboard_auth import list_token_providers
 from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
-from hermes_cli.dashboard_auth.base import ProviderError, TokenPrincipal
+from hermes_cli.dashboard_auth.base import (
+    ProviderError,
+    TokenPrincipal,
+    log_provider_failure,
+)
 from hermes_cli.dashboard_auth.client_ip import client_ip
 
 _log = logging.getLogger(__name__)
@@ -122,20 +126,27 @@ def authenticate_token(
         try:
             principal = provider.verify_token(token=token)
         except ProviderError as e:
-            _log.warning(
-                "dashboard-auth: token provider %r unreachable during verify: %s",
-                provider.name, e,
+            e.provider = provider.name
+            log_provider_failure(
+                _log,
+                provider=provider.name,
+                operation="token_verify",
+                error=e,
             )
             if unreachable is None:
                 unreachable = provider.name
+                request.state.token_auth_provider_error = e
             continue
         except Exception as e:  # noqa: BLE001 — a buggy provider must not 500 the gate
-            _log.warning(
-                "dashboard-auth: token provider %r raised during verify: %s",
-                provider.name, e,
+            log_provider_failure(
+                _log,
+                provider=provider.name,
+                operation="token_verify",
+                error=e,
             )
             continue
         if principal is not None:
+            request.state.token_auth_provider_error = None
             return principal, None
     return None, unreachable
 
@@ -176,8 +187,15 @@ async def token_auth_middleware(
             path=path,
             ip=_client_ip(request),
         )
+        provider_error = getattr(request.state, "token_auth_provider_error", None)
+        reference_id = getattr(provider_error, "reference_id", "")
         return JSONResponse(
-            {"detail": f"Auth provider {unreachable!r} unreachable"},
+            {
+                "error": "provider_unavailable",
+                "detail": "The authentication provider is temporarily unavailable.",
+                "reference_id": reference_id,
+                "retryable": True,
+            },
             status_code=503,
         )
 

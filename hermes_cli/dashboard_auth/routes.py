@@ -38,6 +38,8 @@ from hermes_cli.dashboard_auth.base import (
     InvalidCredentialsError,
     ProviderError,
     RefreshExpiredError,
+    log_provider_failure,
+    safe_oauth_error_code,
 )
 from hermes_cli.dashboard_auth.cookies import (
     clear_pkce_cookie,
@@ -224,14 +226,14 @@ async def auth_login(request: Request, provider: str, next: str = ""):
 
     try:
         ls = p.start_login(redirect_uri=_redirect_uri(request))
-    except ProviderError:
+    except ProviderError as e:
         audit_log(
             AuditEvent.LOGIN_FAILURE,
             provider=provider,
             reason="provider_unreachable",
             ip=_client_ip(request),
         )
-        return provider_outage_response(request, provider)
+        return provider_outage_response(request, provider, error=e)
 
     audit_log(
         AuditEvent.LOGIN_START,
@@ -388,7 +390,19 @@ async def auth_native_authorize(
             client_ip=_client_ip(request),
         )
     except native_flow.NativeFlowError as e:
-        raise HTTPException(status_code=503, detail=str(e))
+        reference_id = log_provider_failure(
+            _log,
+            provider=p.name,
+            operation="native_authorize",
+            error=e,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Native sign-in is temporarily unavailable. "
+                f"Reference: {reference_id}"
+            ),
+        ) from e
 
     if getattr(p, "supports_password", False):
         # Password provider: no IDP to redirect through. Land the system
@@ -416,8 +430,8 @@ async def auth_native_authorize(
 
     try:
         ls = p.start_login(redirect_uri=_redirect_uri(request))
-    except ProviderError:
-        return provider_outage_response(request, p.name)
+    except ProviderError as e:
+        return provider_outage_response(request, p.name, error=e)
 
     audit_log(
         AuditEvent.NATIVE_AUTHORIZE_START,
@@ -491,16 +505,17 @@ async def auth_callback(
         )
 
     if error:
+        safe_error = safe_oauth_error_code(error)
         audit_log(
             AuditEvent.LOGIN_FAILURE,
             provider=provider_name,
             reason="idp_error",
-            error=error,
+            error=safe_error,
             ip=_client_ip(request),
         )
         raise HTTPException(
             status_code=400,
-            detail=f"OAuth error from provider: {error} ({error_description})",
+            detail=f"OAuth sign-in failed ({safe_error}).",
         )
 
     if not state or state != expected_state:
@@ -572,22 +587,25 @@ async def auth_callback(
         clear_pkce_cookie(response, prefix=_prefix(request))
         clear_sso_attempt_cookie(response, prefix=_prefix(request))
         return response
-    except InvalidCodeError as e:
+    except InvalidCodeError:
         audit_log(
             AuditEvent.LOGIN_FAILURE,
             provider=provider_name,
             reason="invalid_code",
             ip=_client_ip(request),
         )
-        raise HTTPException(status_code=400, detail=f"Invalid code: {e}")
-    except ProviderError:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid or expired authorization code.",
+        )
+    except ProviderError as e:
         audit_log(
             AuditEvent.LOGIN_FAILURE,
             provider=provider_name,
             reason="provider_unreachable",
             ip=_client_ip(request),
         )
-        return provider_outage_response(request, provider_name)
+        return provider_outage_response(request, provider_name, error=e)
 
     audit_log(
         AuditEvent.LOGIN_SUCCESS,
@@ -890,14 +908,14 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
         # supports_password was True but the method isn't actually
         # implemented — a provider bug, not a client error.
         raise HTTPException(status_code=500, detail="Provider misconfigured")
-    except ProviderError:
+    except ProviderError as e:
         audit_log(
             AuditEvent.LOGIN_FAILURE,
             provider=body.provider,
             reason="provider_unreachable",
             ip=ip,
         )
-        return provider_outage_response(request, body.provider)
+        return provider_outage_response(request, body.provider, error=e)
 
     audit_log(
         AuditEvent.LOGIN_SUCCESS,
@@ -980,9 +998,11 @@ async def auth_logout(request: Request):
             try:
                 provider.revoke_session(refresh_token=rt)
             except Exception as e:  # noqa: BLE001 — best-effort
-                _log.warning(
-                    "dashboard-auth: revoke on %r failed: %s",
-                    provider.name, e,
+                log_provider_failure(
+                    _log,
+                    provider=provider.name,
+                    operation="revoke",
+                    error=e,
                 )
 
     sess = getattr(request.state, "session", None)
@@ -1116,10 +1136,11 @@ async def api_auth_native_revoke(request: Request, body: _NativeRevokeBody):
     except ProviderError:
         return {"ok": True, "revoked": False}
     except Exception as e:  # noqa: BLE001 — outage must not block local logout
-        _log.warning(
-            "dashboard-auth: native revoke validation on %r failed: %s",
-            provider.name,
-            e,
+        log_provider_failure(
+            _log,
+            provider=provider.name,
+            operation="native_revoke_validation",
+            error=e,
         )
         return {"ok": True, "revoked": False}
 
@@ -1138,10 +1159,11 @@ async def api_auth_native_revoke(request: Request, body: _NativeRevokeBody):
                 revoked = False
     except Exception as e:  # noqa: BLE001 — best-effort/idempotent logout
         revoked = False
-        _log.warning(
-            "dashboard-auth: native revoke on %r failed: %s",
-            provider.name,
-            e,
+        log_provider_failure(
+            _log,
+            provider=provider.name,
+            operation="native_revoke",
+            error=e,
         )
 
     audit_log(
@@ -1258,10 +1280,7 @@ async def auth_native_refresh(request: Request, body: _NativeRefreshBody):
     except AccessDeniedError as e:
         return access_denied_response(request, error=e)
     except ProviderError as e:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Auth provider {str(e)!r} unreachable",
-        ) from e
+        return provider_outage_response(request, e.provider or owner, error=e)
 
     if refreshed is not None:
         session, _provider_name = refreshed
