@@ -36,21 +36,13 @@ PUBLIC_API_PATHS: frozenset[str] = frozenset({
     # host-local detail so readiness checks cannot spend their budget inside
     # cold plugin imports.
     "/api/health",
-    # Liveness probe target. Returns version, gateway state, active
-    # session count, and the dashboard auth-gate shape. No bodies, no
-    # session content, no secrets. Documented as the portal's wildcard
+    # Liveness probe target. Anonymous callers receive only ``ok`` and the
+    # boolean auth-gate state. Authenticated callers receive the operator
+    # inventory assembled by the endpoint. Documented as the portal's wildcard
     # liveness probe in
     # ``docs/agent-dashboard-public-url-contract.md`` (NAS side).
     "/api/status",
-    # Read-only config-defaults / schema feeds for the SPA's Config page.
-    "/api/config/defaults",
-    "/api/config/schema",
-    # Read-only model metadata (context windows, etc.) — same shape as
-    # provider catalogs already exposed on the public internet.
-    "/api/model/info",
-    # Read-only theme + plugin manifests for the dashboard skin engine.
-    "/api/dashboard/themes",
-    "/api/dashboard/plugins",
+
     # Chronos managed-cron fire webhook (NAS -> agent). NOT cookie-gated: it
     # carries its own short-lived NAS-minted JWT (purpose=cron_fire), which the
     # handler verifies as the real auth. Must bypass the dashboard auth gate so

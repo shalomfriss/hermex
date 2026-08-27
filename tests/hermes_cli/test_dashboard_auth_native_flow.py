@@ -383,6 +383,7 @@ def test_status_loopback_mode_has_no_auth_flows():
     web_server.app.state.auth_required = False
     try:
         client = TestClient(web_server.app, base_url="http://127.0.0.1:8080")
+        client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
         body = client.get("/api/status").json()
         assert body["auth_required"] is False
         assert body["auth_flows"] == []
@@ -433,6 +434,11 @@ def pw_gated_client():
 def test_status_advertises_native_pkce_for_password_only_gateway(
     pw_gated_client,
 ):
+    login = pw_gated_client.post(
+        "/auth/password-login",
+        json={"provider": "testpw", "username": "admin", "password": "hunter2"},
+    )
+    assert login.status_code == 200
     body = pw_gated_client.get("/api/status").json()
     assert body["auth_required"] is True
     assert "cookie" in body["auth_flows"]

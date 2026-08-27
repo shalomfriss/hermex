@@ -379,7 +379,16 @@ async def gated_auth_middleware(
 
     path = request.url.path
     if _path_is_public(path):
-        return await call_next(request)
+        # ``/api/status`` has a deliberately tiny anonymous representation and
+        # a full authenticated representation. If credentials are present,
+        # verify them through the normal path so the handler can distinguish
+        # the two without duplicating provider/session logic. Truly anonymous
+        # probes still bypass auth, as do all other public bootstrap routes.
+        if path != "/api/status":
+            return await call_next(request)
+        public_at, public_rt = read_session_cookies(request)
+        if not _extract_bearer(request) and not public_at and not public_rt:
+            return await call_next(request)
 
     # RFC 8252 native-app bearer path (goal: no session cookies). The desktop
     # authenticates REST with ``Authorization: Bearer <access_token>`` — the

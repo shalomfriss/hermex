@@ -344,8 +344,26 @@ class TestWebServerEndpoints:
         monkeypatch.setattr(gateway_config, "load_gateway_config", _load)
 
         async def _run():
+            from starlette.requests import Request
+
             event_loop_thread = threading.get_ident()
-            await web_server.get_status()
+            request = Request({
+                "type": "http",
+                "method": "GET",
+                "path": "/api/status",
+                "query_string": b"",
+                "headers": [
+                    (
+                        web_server._SESSION_HEADER_NAME.lower().encode(),
+                        web_server._SESSION_TOKEN.encode(),
+                    )
+                ],
+                "scheme": "http",
+                "server": ("127.0.0.1", 9119),
+                "client": ("127.0.0.1", 50000),
+                "app": web_server.app,
+            })
+            await web_server.get_status(request)
             return event_loop_thread
 
         event_loop_thread = asyncio.run(_run())
@@ -1586,7 +1604,7 @@ class TestWebServerEndpoints:
         resp = unauth_client.get("/api/status")
         assert resp.status_code == 200
         resp = unauth_client.get("/api/dashboard/plugins")
-        assert resp.status_code == 200
+        assert resp.status_code == 401
         resp = unauth_client.get("/api/dashboard/plugins/rescan")
         assert resp.status_code == 401
         resp = self.client.get("/api/dashboard/plugins/rescan")
@@ -3021,8 +3039,9 @@ class TestModelInfoEndpoint:
             from starlette.testclient import TestClient
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
-        from hermes_cli.web_server import app
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
         self.client = TestClient(app)
+        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
 
 
     def test_model_info_with_dict_config(self, monkeypatch):

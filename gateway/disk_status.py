@@ -17,9 +17,9 @@ files), disk is sampled live via :func:`shutil.disk_usage` — a single
 ``statvfs`` call, the same thing the readiness probe does per request.
 There is no meaningful "staleness" dimension, so no ``sampled_at``.
 
-Public-safety note: ``/api/status`` is an unauthenticated liveness probe
-(``PUBLIC_API_PATHS``).  This block carries only coarse numbers (MB
-granularity, whole-percent usage) and an enum — the same disclosure
+Disclosure note: the dashboard exposes this block only in the authenticated
+operator form of ``/api/status``. It still carries only coarse numbers (MB
+granularity, whole-percent usage) and an enum — the same bounded
 class as the ``memory`` block.
 
 Everything is best-effort and read-only: an unreadable filesystem

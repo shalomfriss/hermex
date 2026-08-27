@@ -62,9 +62,7 @@ def test_status_reports_auth_required_in_gated_mode(gated_client):
     # a cookie. Hit it cold.
     r = gated_client.get("/api/status")
     assert r.status_code == 200
-    body = r.json()
-    assert body["auth_required"] is True
-    assert body["auth_providers"] == ["stub"]
+    assert r.json() == {"ok": True, "auth_required": True}
 
 
 
@@ -87,11 +85,8 @@ def test_status_withholds_host_detail_in_gated_mode(gated_client):
     r = gated_client.get("/api/status")
     assert r.status_code == 200
     body = r.json()
-    # Liveness / auth-gate shape stays public.
-    for key in ("version", "gateway_state", "auth_required", "auth_providers"):
-        assert key in body, f"liveness field {key!r} must stay public"
-    # Deployment recon must be withheld from the anonymous public probe.
-    leaked = _HOST_DETAIL_FIELDS & set(body.keys())
-    assert not leaked, f"/api/status leaked host detail under the gate: {leaked}"
+    assert body == {"ok": True, "auth_required": True}
+    leaked = _HOST_DETAIL_FIELDS & set(body)
+    assert not leaked
 
 
