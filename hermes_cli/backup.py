@@ -151,7 +151,12 @@ _IMPORT_SKIP_NAMES = {
 }
 
 # zipfile.open() drops Unix mode bits on extract; restore tightens these to 0600.
-_SECRET_FILE_NAMES = {".env", "auth.json", "state.db"}
+_SECRET_FILE_NAMES = {
+    ".env",
+    "auth.json",
+    "dashboard_refresh_binding_keys.json",
+    "state.db",
+}
 
 # Reserved archive subtree for provider state that lives OUTSIDE HERMES_HOME
 # (e.g. ~/.honcho, ~/.hindsight). The active memory provider declares these via
@@ -1297,6 +1302,7 @@ _QUICK_STATE_FILES = (
     "config.yaml",
     ".env",
     "auth.json",
+    "secrets/dashboard_refresh_binding_keys.json",
     "cron/jobs.json",
     "cron/executions.db",
     "gateway_state.json",

@@ -1303,6 +1303,27 @@ class TestQuickSnapshot:
         assert "feishu_comment_pairing.json" in files
 
 
+    def test_snapshot_includes_refresh_binding_keyring(self, hermes_home):
+        """Restart-safe refresh ownership remains recoverable after updates."""
+        from hermes_cli.backup import create_quick_snapshot
+
+        secret_dir = hermes_home / "secrets"
+        secret_dir.mkdir()
+        keyring = secret_dir / "dashboard_refresh_binding_keys.json"
+        keyring.write_text('{"protected":"test-only-placeholder"}')
+
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+
+        copied = (
+            hermes_home
+            / "state-snapshots"
+            / snap_id
+            / "secrets"
+            / "dashboard_refresh_binding_keys.json"
+        )
+        assert copied.read_bytes() == keyring.read_bytes()
+
+
 
 # ---------------------------------------------------------------------------
 # Pre-update backup (hermes update safety net)

@@ -11811,6 +11811,21 @@ def cmd_dashboard_sso_check(args):
     _impl(args)
 
 
+def cmd_dashboard_refresh_binding_rotate(_args):
+    """Rotate the profile-scoped dashboard refresh-binding keyring."""
+    from hermes_cli.dashboard_auth.refresh_binding import rotate_refresh_binding_key
+
+    if not rotate_refresh_binding_key():
+        print(
+            "Refresh-binding key rotation failed closed; inspect the "
+            "profile-scoped key state and permissions."
+        )
+        raise SystemExit(1)
+    print(
+        "Refresh-binding signing key rotated; one previous generation remains valid."
+    )
+
+
 def cmd_gateway_enroll(args):
     """Enroll a self-hosted gateway with a relay connector."""
     from hermes_cli.gateway_enroll import cmd_gateway_enroll as _impl
@@ -14109,6 +14124,7 @@ def main():
         cmd_dashboard=cmd_dashboard,
         cmd_dashboard_register=cmd_dashboard_register,
         cmd_dashboard_sso_check=cmd_dashboard_sso_check,
+        cmd_dashboard_refresh_binding_rotate=cmd_dashboard_refresh_binding_rotate,
     )
 
 

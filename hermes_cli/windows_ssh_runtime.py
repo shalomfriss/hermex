@@ -73,29 +73,21 @@ def _lock_path(ownership_id: str) -> Path:
 
 
 def _current_sid():
-    _, _, win32api, win32con, _, _, win32security = _win32()
-    token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY)
-    return win32security.GetTokenInformation(token, win32security.TokenUser)[0]
+    from hermes_cli.windows_secure_files import current_sid
+
+    return current_sid()
 
 
 def _system_sid():
-    return _win32()[6].ConvertStringSidToSid("S-1-5-18")
+    from hermes_cli.windows_secure_files import system_sid
+
+    return system_sid()
 
 
 def _security_attributes():
-    ntsecuritycon, _, _, _, _, _, win32security = _win32()
-    owner = _current_sid()
-    acl = win32security.ACL()
-    for sid in (owner, _system_sid()):
-        acl.AddAccessAllowedAceEx(win32security.ACL_REVISION, 0, ntsecuritycon.FILE_ALL_ACCESS, sid)
-    descriptor = win32security.SECURITY_DESCRIPTOR()
-    descriptor.SetSecurityDescriptorOwner(owner, False)
-    descriptor.SetSecurityDescriptorDacl(True, acl, False)
-    # Protect the DACL so inheritable parent ACEs (%LOCALAPPDATA% grants) are not merged in.
-    descriptor.SetSecurityDescriptorControl(win32security.SE_DACL_PROTECTED, win32security.SE_DACL_PROTECTED)
-    attributes = win32security.SECURITY_ATTRIBUTES()
-    attributes.SECURITY_DESCRIPTOR = descriptor
-    return attributes
+    from hermes_cli.windows_secure_files import security_attributes
+
+    return security_attributes()
 
 
 def _allowed_sids():
@@ -105,67 +97,28 @@ def _allowed_sids():
 
 
 def _verify_security(handle) -> None:
-    _, _, _, _, _, _, win32security = _win32()
-    info = win32security.OWNER_SECURITY_INFORMATION | win32security.DACL_SECURITY_INFORMATION
-    descriptor = win32security.GetSecurityInfo(handle, win32security.SE_FILE_OBJECT, info)
-    owner = descriptor.GetSecurityDescriptorOwner()
-    owner_value = win32security.ConvertSidToStringSid(owner)
-    if owner_value not in _allowed_sids():
-        raise OSError("Windows SSH runtime object has the wrong owner")
-    dacl = descriptor.GetSecurityDescriptorDacl()
-    if dacl is None:
-        raise OSError("Windows SSH runtime object has a null DACL")
-    allowed = _allowed_sids()
-    allow_types = {
-        win32security.ACCESS_ALLOWED_ACE_TYPE,
-        win32security.ACCESS_ALLOWED_OBJECT_ACE_TYPE,
-        getattr(win32security, "ACCESS_ALLOWED_CALLBACK_ACE_TYPE", 9),
-        getattr(win32security, "ACCESS_ALLOWED_CALLBACK_OBJECT_ACE_TYPE", 11),
-    }
-    for index in range(dacl.GetAceCount()):
-        ace = dacl.GetAce(index)
-        ace_type = ace[0][0]
-        mask = ace[1]
-        sid = ace[-1]
-        if ace_type in allow_types and mask:
-            if win32security.ConvertSidToStringSid(sid) not in allowed:
-                raise OSError("Windows SSH runtime object has a permissive DACL")
+    from hermes_cli.windows_secure_files import verify_handle_security
+
+    verify_handle_security(handle, label="Windows SSH runtime object")
 
 
 def _open(path: Path, access: int, creation: int, flags: int, share: int = 0):
-    _, _, _, _, win32file, _, _ = _win32()
-    handle = win32file.CreateFile(str(path), access, share, _security_attributes(), creation, flags, None)
-    try:
-        actual = win32file.GetFinalPathNameByHandle(handle, 0)
-        if actual.startswith("\\\\?\\"):
-            actual = actual[4:]
-        expected = os.path.abspath(str(path))
-        if os.path.normcase(actual) != os.path.normcase(expected):
-            raise OSError("Windows SSH runtime handle escaped its expected path")
-        attributes = win32file.GetFileInformationByHandle(handle)[0]
-        if attributes & 0x400:
-            raise OSError("Windows SSH runtime path contains a reparse point")
-        _verify_security(handle)
-        return handle
-    except BaseException:
-        win32file.CloseHandle(handle)
-        raise
+    from hermes_cli.windows_secure_files import open_secure_file
+
+    return open_secure_file(
+        path,
+        access=access,
+        creation=creation,
+        flags=flags,
+        share=share,
+        label="Windows SSH runtime object",
+    )
 
 
 def _ensure_directory(path: Path) -> None:
-    _, pywintypes, _, win32con, win32file, _, _ = _win32()
-    if path.parent != path:
-        _ensure_directory(path.parent) if path.parent not in (Path(path.anchor), path) and not path.parent.exists() else None
-    if not path.exists():
-        try:
-            win32file.CreateDirectory(str(path), _security_attributes())
-        except pywintypes.error as exc:
-            if exc.winerror != 183:
-                raise
-    handle = _open(path, win32con.GENERIC_READ | win32con.READ_CONTROL, win32con.OPEN_EXISTING,
-                   win32con.FILE_FLAG_BACKUP_SEMANTICS | _OPEN_REPARSE_POINT,
-                   win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE | win32con.FILE_SHARE_DELETE)
-    win32file.CloseHandle(handle)
+    from hermes_cli.windows_secure_files import ensure_secure_directory
+
+    ensure_secure_directory(path, label="Windows SSH runtime directory")
 
 
 def _ensure_scope(ownership_id: str) -> Path:
