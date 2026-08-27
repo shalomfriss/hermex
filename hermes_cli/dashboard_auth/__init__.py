@@ -10,7 +10,6 @@ default. Third parties register their own providers via the plugin hook
 ``ctx.register_dashboard_auth_provider``.
 """
 from hermes_cli.dashboard_auth.base import (
-    ACCESS_DENIED_REASONS,
     AccessDeniedError,
     DashboardAuthProvider,
     Session,
@@ -32,7 +31,6 @@ from hermes_cli.dashboard_auth.registry import (
 )
 
 __all__ = [
-    "ACCESS_DENIED_REASONS",
     "AccessDeniedError",
     "DashboardAuthProvider",
     "Session",

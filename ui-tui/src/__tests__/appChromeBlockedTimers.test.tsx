@@ -40,6 +40,7 @@ const mountTree = (tree: React.ReactElement, { interactive = false } = {}) => {
   const stderr = new PassThrough()
 
   let output = ''
+  const outputWaiters: Array<{ expected: string[]; resolve: () => void }> = []
 
   Object.assign(stdout, { columns: 120, isTTY: false, rows: 20 })
   // PromptZone's prompts call `useInput`, which needs raw mode; without it Ink
@@ -51,6 +52,17 @@ const mountTree = (tree: React.ReactElement, { interactive = false } = {}) => {
   Object.assign(stderr, { isTTY: false })
   stdout.on('data', chunk => {
     output += chunk.toString()
+
+    const visibleOutput = stripAnsi(output)
+
+    for (let index = outputWaiters.length - 1; index >= 0; index -= 1) {
+      const waiter = outputWaiters[index]!
+
+      if (waiter.expected.every(text => visibleOutput.includes(text))) {
+        outputWaiters.splice(index, 1)
+        waiter.resolve()
+      }
+    }
   })
 
   const instance = renderSync(tree, {
@@ -70,7 +82,17 @@ const mountTree = (tree: React.ReactElement, { interactive = false } = {}) => {
     clear: () => {
       output = ''
     },
-    output: () => stripAnsi(output)
+    output: () => stripAnsi(output),
+    /** Resolve once output emitted after the last clear contains every string. */
+    waitForOutput: (...expected: string[]) => {
+      const visibleOutput = stripAnsi(output)
+
+      if (expected.every(text => visibleOutput.includes(text))) {
+        return Promise.resolve()
+      }
+
+      return new Promise<void>(resolve => outputWaiters.push({ expected, resolve }))
+    }
   }
 }
 
@@ -200,8 +222,9 @@ const mountLayout = (overlay: Partial<OverlayState> = {}, ui: Partial<UiState> =
   )
 }
 
-// Give React's scheduler a turn so a store-driven re-render (and the effect
-// re-arm that follows it) lands before we assert.
+// Give React's scheduler a turn for tests that only need a generic store-driven
+// re-render. Tests that require a particular frame use mountTree.waitForOutput
+// instead, so standard-runner contention cannot race an arbitrary delay.
 const flush = () => new Promise(resolve => setTimeout(resolve, 20))
 
 let intervalSpy: IntervalSpy
@@ -295,7 +318,11 @@ describe('status-chrome timers under an occluding overlay', () => {
     nowSpy.mockReturnValue(T0 + 300_000)
     rule.clear()
     resetOverlayState()
-    await flush()
+
+    // Wait for the store-driven reveal output itself instead of polling on a
+    // wall-clock interval. Under runner contention the old 20ms sleep could
+    // win while output was still empty even though rendering followed.
+    await rule.waitForOutput('6m 0s', '✓ 5m 5s')
 
     const resumed = rule.output()
 

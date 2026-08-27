@@ -325,6 +325,37 @@ For a policy misconfiguration, remove or relax only the `authorization` keys, re
 
 For an OIDC protocol or IdP outage, disable only the self-hosted provider and use an already configured independent provider through a trusted path. Do not weaken shared cookie, bearer, or WebSocket gates.
 
+## Upstream-friendly architecture
+
+Enterprise policy and OIDC-specific behavior live under
+`plugins/dashboard_auth/self_hosted/`. The shared dashboard-auth package owns
+only provider-neutral contracts: login completion can carry a nonce, providers
+can return a stable access-denial category, and every transport maps that denial
+to the same safe response. The core configuration loader deliberately does not
+enumerate self-hosted policy keys; it preserves the plugin-owned
+`dashboard.oauth.self_hosted` mapping and the plugin supplies its defaults.
+
+This boundary keeps normal upstream updates away from the enterprise policy
+implementation. The complete operator material stays in this dedicated guide
+instead of repeatedly editing the high-churn general dashboard guide. Before
+integrating an upstream release, verify the merge without changing the working
+tree, then run the focused auth suites after the real merge:
+
+```bash
+git fetch upstream main
+git merge-tree --write-tree HEAD upstream/main
+git merge upstream/main
+scripts/run_tests.sh tests/hermes_cli/test_dashboard_auth_provider_base.py \
+  tests/hermes_cli/test_dashboard_auth_middleware.py \
+  tests/plugins/dashboard_auth/test_self_hosted_policy.py \
+  tests/plugins/dashboard_auth/test_self_hosted_provider.py -q
+```
+
+`git merge-tree` exits nonzero and prints the overlapping paths when manual
+resolution would be required. Keep provider-specific claims, policy categories,
+IdP adapters, and diagnostics in the self-hosted plugin; widen the shared auth
+contract only for behavior that every provider transport must understand.
+
 ## Limitations
 
 - SAML 2.0 is not implemented. Use the IdP's OIDC application support.
