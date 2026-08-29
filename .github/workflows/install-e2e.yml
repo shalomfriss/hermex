@@ -63,18 +63,19 @@ jobs:
     outputs:
       tags: ${{ steps.pick.outputs.tags }}
     steps:
-      # Keep this checkout intentionally minimal but deterministic. It pulls the
-      # release-picker helper and relies on public upstream tags for release
-      # visibility, because this fork intentionally carries no release tags.
+      # Keep the script tied to this exact commit, but do not persist the
+      # repository token: release tags come from the public upstream below.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          fetch-depth: 0
-          fetch-tags: true
+          filter: blob:none
           persist-credentials: false
           sparse-checkout: scripts/sandbox/pick-release-tags.sh
           sparse-checkout-cone-mode: false
 
-      # Public upstream is the source of v* release tags for this branch.
+      # This repository intentionally carries no release tags. Fetch only the
+      # public upstream's v* tag refs (no branch refs or upstream checkout) so
+      # scheduled runs here sample the same releases as upstream without
+      # granting credentials or executing upstream files.
       - name: Fetch upstream release tags
         run: |
           set -euo pipefail
