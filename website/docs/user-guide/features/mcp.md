@@ -286,7 +286,7 @@ For fully headless gateways (messaging bot, no interactive terminal at all), the
 
 See [OAuth over SSH / Remote Hosts](../../guides/oauth-over-ssh.md#mcp-servers) for the full walkthrough, including DCR-less servers (e.g. Slack), pre-registered `client_id`/`client_secret`, scope customization, and re-auth via `hermes mcp login <server>`.
 
-**Pitfall — providers that don't support automatic registration (Google Drive, Atlassian).** Some servers reject the dynamic client registration step (RFC 7591) that bare `auth: oauth` relies on — Google's official Drive server (`https://drivemcp.googleapis.com/mcp/v1`) returns a `400 Bad Request`, so no OAuth client is created and no token is acquired. The symptom is subtle: these servers also serve `tools/list` *without* auth, so `hermes mcp login` can list the tools and look like it worked, but every real tool call later times out. `hermes mcp login` now detects this (it checks that a token actually landed on disk) and tells you to supply your own OAuth client. Create one in the provider's console and add it to config:
+**Pitfall — providers that don't support automatic registration (Google Drive).** Some servers reject the dynamic client registration step (RFC 7591) that bare `auth: oauth` relies on — Google's official Drive server (`https://drivemcp.googleapis.com/mcp/v1`) returns a `400 Bad Request`, so no OAuth client is created and no token is acquired. The symptom is subtle: these servers also serve `tools/list` *without* auth, so `hermes mcp login` can list the tools and look like it worked, but every real tool call later times out. `hermes mcp login` now detects this (it checks that a token actually landed on disk) and tells you to supply your own OAuth client. Create one in the provider's console and add it to config:
 
 ```yaml
 mcp_servers:
@@ -299,6 +299,60 @@ mcp_servers:
 ```
 
 Then run `hermes mcp login googledrive` — with the pre-registered client, Hermes skips registration and runs the normal browser authorization flow.
+
+### Atlassian Jira coding workflow
+
+The catalog entry uses Atlassian's official OAuth endpoint,
+`https://mcp.atlassian.com/v1/mcp/authv2`. The legacy `/v1/sse` endpoint is
+unsupported after June 30, 2026. Connect an interactive coding agent with:
+
+```bash
+hermes mcp install atlassian
+hermes mcp login atlassian
+hermes mcp configure atlassian
+hermes mcp test atlassian
+```
+
+During login, approve the intended Atlassian account and site and only the Jira
+access your work requires. The catalog defaults to five coding-workflow tools:
+`getJiraIssue`, `searchJiraIssuesUsingJql`, `getTransitionsForJiraIssue`,
+`addCommentToJiraIssue`, and `transitionJiraIssue`. The configure step lets you
+inspect or adjust that surface after authentication. Start a fresh Hermes
+session or use the existing MCP reload flow so the authenticated tools are
+rediscovered.
+
+Begin with a read-only check against a known issue key. A safe coding workflow
+is to read the issue and acceptance criteria, implement and test the change,
+post a concise comment containing the canonical pull-request URL only when
+requested, then discover valid workflow transitions and transition the issue
+only when explicitly authorized. Transition IDs and status names vary by Jira
+workflow, so never assume a global mapping. Read the issue again after a comment
+or transition before reporting that the write succeeded.
+
+If setup or a call fails:
+
+- When connecting from a Desktop composer suggestion, an OAuth cancellation or
+  failure after the new config write triggers a best-effort removal of that
+  entry. Other install surfaces can leave the server configured; remove it or
+  authenticate again before use.
+- For 401/403 or missing scopes, do not retry blindly. Run
+  `hermes mcp login atlassian` again or ask an Atlassian administrator to verify
+  the signed-in user's site, project, issue, and scope access.
+- MCP connection startup and reconnect use bounded retry/backoff. A 429, 5xx,
+  network, or timeout failure from an individual tool call is returned as a
+  sanitized error unless the existing OAuth/session-expiry recovery applies;
+  retry a write only after confirming it is safe and was not already applied.
+- If tools are missing or upstream names changed, run
+  `hermes mcp configure atlassian`, then restart the session or reload MCP.
+- For missing or partial issue data, verify that the correct Atlassian site was
+  selected and the signed-in user can access the project and issue. Malformed or
+  oversized responses remain subject to Hermes's MCP validation and result-size
+  limits; there is no Jira-specific parser that bypasses those safeguards.
+
+Interactive user OAuth is the supported quick-start path. A headless gateway or
+service-account/API-token deployment requires separate administrator approval,
+least-privilege account design, and secret storage; do not place an Atlassian
+token or client secret directly in `config.yaml`.
 
 **Pitfall — config auto-reload race.** When you edit `~/.hermes/config.yaml` from inside a running Hermes session, the CLI auto-reloads MCP connections with a 30s timeout. That's not enough for an interactive OAuth flow. Add the entry, then run `hermes mcp login <server>` from a fresh terminal — it waits the full 5 minutes for you to complete auth.
 

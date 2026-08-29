@@ -599,6 +599,25 @@ class TestToolsConfigIncludeMode:
 
 
 class TestShippedCatalog:
+    def test_atlassian_uses_current_jira_oauth_contract(self, monkeypatch):
+        """The shipped Jira workflow stays on Atlassian's supported endpoint."""
+        monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
+
+        entry = _entry("atlassian")
+
+        assert entry.transport.type == "http"
+        assert entry.transport.url == "https://mcp.atlassian.com/v1/mcp/authv2"
+        assert entry.auth.type == "oauth"
+        assert entry.suggest is not None
+        assert "atlassian.net" in entry.suggest.hosts
+        assert entry.tools.default_enabled == [
+            "getJiraIssue",
+            "searchJiraIssuesUsingJql",
+            "getTransitionsForJiraIssue",
+            "addCommentToJiraIssue",
+            "transitionJiraIssue",
+        ]
+
     def test_all_shipped_manifests_parse(self, monkeypatch):
         """Every manifest in optional-mcps/ must parse cleanly.
 

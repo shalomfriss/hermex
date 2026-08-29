@@ -11,6 +11,12 @@ const INDEX = [
 ]
 
 describe('matchSuggestions', () => {
+  it('uses Atlassian’s supported Jira OAuth endpoint in the old-backend fallback', () => {
+    expect(MCP_DIRECTORY.find(entry => entry.name === 'atlassian')?.url).toBe(
+      'https://mcp.atlassian.com/v1/mcp/authv2'
+    )
+  })
+
   it('matches a whole word and reports the keyword that hit', () => {
     expect(matchSuggestions('can you check the linear board', INDEX)).toEqual([{ keyword: 'linear', server: 'linear' }])
   })
