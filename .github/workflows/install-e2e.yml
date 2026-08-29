@@ -73,9 +73,9 @@ jobs:
           sparse-checkout-cone-mode: false
 
       # This repository intentionally carries no release tags. Fetch only the
-      # public upstream's v* tag refs (no branches or code) so scheduled runs in
-      # this downstream repository sample the same releases as upstream without
-      # granting credentials or executing files from another checkout.
+      # public upstream's v* tag refs (no branch refs or upstream checkout) so
+      # scheduled runs here sample the same releases as upstream without
+      # granting credentials or executing upstream files.
       - name: Fetch upstream release tags
         run: |
           set -euo pipefail
