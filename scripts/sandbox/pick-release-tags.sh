@@ -19,10 +19,14 @@
 #             requested emits all of them.
 #   --repo    repository to read tags from (default: this checkout).
 #
+# Reads tags from the local checkout. It is intentionally defensive: a shallow
+# clone can return no tags for tag-restricted jobs, so we attempt one explicit
+# tag fetch before failing.
+#
 # Reads tags from the local checkout, so it needs one fetched with tags
-# (actions/checkout with fetch-depth: 0, or `fetch-tags: true`). A shallow
-# checkout has no tags and this exits non-zero rather than silently emitting an
-# empty matrix.
+# (actions/checkout with fetch-depth: 0, or `fetch-tags: true`), or a fallback
+# `git fetch --tags` when the immediate checkout surface is tag-empty.
+# It exits non-zero rather than silently emitting an empty matrix.
 #
 # Only vYYYY.M.D[.N] release tags are considered; the repo also carries
 # backup/* and one-off tags that are not releases.
@@ -73,6 +77,30 @@ mapfile -t tags < <(
 )
 
 total="${#tags[@]}"
+if [ "$total" -eq 0 ]; then
+  for candidate_remote in origin upstream; do
+    if [ "$candidate_remote" = "upstream" ] && ! git -C "$REPO" remote get-url upstream >/dev/null 2>&1; then
+      candidate_remote_url="${UPSTREAM_REPO_URL:-https://github.com/NousResearch/hermes-agent.git}"
+    else
+      candidate_remote_url="$candidate_remote"
+    fi
+    if git -C "$REPO" ls-remote --exit-code "$candidate_remote_url" >/dev/null 2>&1; then
+      echo "info: no tags present in checkout; attempting explicit tag fetch from '$candidate_remote_url'" >&2
+      if git -C "$REPO" fetch --tags --force --prune "$candidate_remote_url" '+refs/tags/*:refs/tags/*'; then
+        mapfile -t tags < <(
+          git -C "$REPO" tag --list 'v*' \
+            | grep -E '^v[0-9]{4}\.[0-9]+\.[0-9]+(\.[0-9]+)?$' \
+            | sort -V
+        )
+        total="${#tags[@]}"
+        if [ "$total" -gt 0 ]; then
+          break
+        fi
+      fi
+    fi
+  done
+fi
+
 if [ "$total" -eq 0 ]; then
   echo "error: no release tags found in $REPO" >&2
   echo '       A shallow clone has no tags: fetch with tags (actions/checkout' >&2
