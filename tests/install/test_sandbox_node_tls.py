@@ -16,52 +16,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PROXY_PATH = REPO_ROOT / "scripts" / "sandbox" / "proxy.py"
 STAGE2_PATH = REPO_ROOT / "scripts" / "sandbox" / "stage2-run.sh"
 
-NODE_HTTPS_PROBE = r"""
-const net = require('net');
-const tls = require('tls');
-const port = Number(process.argv[1]);
-const raw = net.connect(port, '127.0.0.1');
-let head = Buffer.alloc(0);
-
-raw.on('connect', () => {
-  raw.write('CONNECT fixture.invalid:443 HTTP/1.1\r\nHost: fixture.invalid:443\r\n\r\n');
-});
-raw.on('error', error => {
-  console.error(error.code || error.message);
-  process.exitCode = 1;
-});
-raw.on('data', function readConnect(chunk) {
-  head = Buffer.concat([head, chunk]);
-  const boundary = head.indexOf('\r\n\r\n');
-  if (boundary === -1) return;
-  raw.removeListener('data', readConnect);
-  const remainder = head.subarray(boundary + 4);
-  if (remainder.length) raw.unshift(remainder);
-
-  const secure = tls.connect({
-    socket: raw,
-    servername: 'fixture.invalid',
-    rejectUnauthorized: true,
-  });
-  let response = '';
-  secure.on('secureConnect', () => {
-    secure.write('GET /ping HTTP/1.1\r\nHost: fixture.invalid\r\nConnection: close\r\n\r\n');
-  });
-  secure.on('data', chunk => { response += chunk; });
-  secure.on('end', () => {
-    if (!response.includes('sandbox tls ok')) {
-      console.error(response);
-      process.exitCode = 1;
-    }
-  });
-  secure.on('error', error => {
-    console.error(error.code || error.message);
-    process.exitCode = 1;
-  });
-});
-"""
-
-
 def _mint_ca(openssl: str, cert: Path, key: Path, common_name: str) -> None:
     subprocess.run(
         [
@@ -99,17 +53,17 @@ def _load_proxy(fixture_root: Path, certs: Path, real_ca: Path):
 
 
 def test_stage2_node_trust_completes_https_through_sandbox_proxy(tmp_path: Path) -> None:
-    node = shutil.which("node")
+    npm = shutil.which("npm")
     openssl = shutil.which("openssl")
-    assert node, "node is required for the sandbox Node TLS regression"
+    assert npm, "npm is required for the sandbox Node TLS regression"
     assert openssl, "openssl is required for the sandbox Node TLS regression"
 
     certs = tmp_path / "certs"
     fixture_root = tmp_path / "http"
     certs.mkdir()
-    fixture = fixture_root / "fixture.invalid" / "ping"
+    fixture = fixture_root / "fixture.invalid" / "-" / "ping"
     fixture.parent.mkdir(parents=True)
-    fixture.write_text("sandbox tls ok", encoding="utf-8")
+    fixture.write_text('{"ok":true}', encoding="utf-8")
 
     _mint_ca(openssl, certs / "ca.pem", certs / "ca.key", "Sandbox MITM CA")
     _mint_ca(openssl, certs / "real-ca.pem", certs / "real-ca.key", "Real upstream CA")
@@ -118,6 +72,9 @@ def test_stage2_node_trust_completes_https_through_sandbox_proxy(tmp_path: Path)
     match = re.search(r"--setenv NODE_EXTRA_CA_CERTS /work/certs/([^ ]+) ", stage2)
     assert match, "stage2-run.sh must set NODE_EXTRA_CA_CERTS to a sandbox CA file"
     configured_ca = certs / match.group(1)
+    npm_match = re.search(r"--setenv npm_config_cafile /work/certs/([^ ]+) ", stage2)
+    assert npm_match, "stage2-run.sh must give npm an explicit sandbox CA file"
+    configured_npm_ca = certs / npm_match.group(1)
 
     proxy = _load_proxy(fixture_root, certs, certs / "real-ca.pem")
     server = socket.socket()
@@ -135,8 +92,14 @@ def test_stage2_node_trust_completes_https_through_sandbox_proxy(tmp_path: Path)
 
     env = os.environ.copy()
     env["NODE_EXTRA_CA_CERTS"] = str(configured_ca)
+    env["npm_config_cafile"] = str(configured_npm_ca)
+    env["HTTP_PROXY"] = f"http://127.0.0.1:{port}"
+    env["HTTPS_PROXY"] = f"http://127.0.0.1:{port}"
+    env["NO_PROXY"] = ""
+    env["npm_config_cache"] = str(tmp_path / "npm-cache")
+    env["npm_config_fetch_retries"] = "0"
     result = subprocess.run(
-        [node, "-e", NODE_HTTPS_PROBE, str(port)],
+        [npm, "ping", "--silent", "--registry=https://fixture.invalid"],
         env=env,
         text=True,
         capture_output=True,
@@ -144,6 +107,6 @@ def test_stage2_node_trust_completes_https_through_sandbox_proxy(tmp_path: Path)
     )
 
     assert result.returncode == 0, (
-        "Node rejected the proxy-minted HTTPS certificate with stage2's configured "
+        "npm rejected the proxy-minted HTTPS certificate with stage2's configured "
         f"extra CA ({configured_ca.name}):\n{result.stderr}"
     )

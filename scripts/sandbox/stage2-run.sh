@@ -198,7 +198,9 @@ fi
 
 # Payload clients terminate TLS against proxy.py's minted leaf, so they trust
 # the sandbox MITM CA. The proxy gets real-ca.pem separately in the payload and
-# uses it only to verify the real upstream side of the connection.
+# uses it only to verify the real upstream side of the connection. npm also gets
+# the same CA explicitly: its fetch stack may supply a request-level CA option,
+# which takes precedence over Node's default-plus-extra trust store.
 exec bwrap \
   --unshare-pid \
   --die-with-parent --proc /proc --tmpfs /tmp \
@@ -220,6 +222,7 @@ exec bwrap \
   --setenv SSL_CERT_FILE /work/certs/ca.pem \
   --setenv GIT_SSL_CAINFO /work/certs/ca.pem \
   --setenv NODE_EXTRA_CA_CERTS /work/certs/ca.pem \
+  --setenv npm_config_cafile /work/certs/ca.pem \
   --setenv OPENSSL_CONF /work/certs/openssl.cnf \
   --setenv HTTP_PROXY http://127.0.0.1:8080 \
   --setenv HTTPS_PROXY http://127.0.0.1:8080 \
