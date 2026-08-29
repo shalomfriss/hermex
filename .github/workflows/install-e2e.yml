@@ -63,15 +63,26 @@ jobs:
     outputs:
       tags: ${{ steps.pick.outputs.tags }}
     steps:
-      # This job only reads tag names and runs one script, so take the cheap
-      # checkout: no blobs (filter), no other files (sparse), but DO fetch tags
-      # -- they are the whole input, and the default shallow checkout has none.
+      # Keep the script tied to this exact commit, but do not persist the
+      # repository token: release tags come from the public upstream below.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           filter: blob:none
-          fetch-tags: true
+          persist-credentials: false
           sparse-checkout: scripts/sandbox/pick-release-tags.sh
           sparse-checkout-cone-mode: false
+
+      # This repository intentionally carries no release tags. Fetch only the
+      # public upstream's v* tag refs (no branch refs or upstream checkout) so
+      # scheduled runs here sample the same releases as upstream without
+      # granting credentials or executing upstream files.
+      - name: Fetch upstream release tags
+        run: |
+          set -euo pipefail
+          git fetch --force --no-recurse-submodules \
+            https://github.com/NousResearch/hermes-agent.git \
+            '+refs/tags/v*:refs/tags/v*'
+
       - id: pick
         run: |
           set -euo pipefail
