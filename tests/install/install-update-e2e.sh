@@ -112,6 +112,17 @@ collect_sandbox_logs() {
     cat "$dest/proxy.log" >&2
     echo "--- end proxy.log ---" >&2
   fi
+  local npm_logs="$SANDBOX_ROOT/home/.npm/_logs"
+  if [ -d "$npm_logs" ]; then
+    mkdir -p "$dest/npm"
+    cp -a "$npm_logs/." "$dest/npm/" 2>/dev/null || true
+    for npm_log in "$dest/npm"/*; do
+      [ -f "$npm_log" ] || continue
+      echo "--- npm debug log: $(basename "$npm_log") ---" >&2
+      cat "$npm_log" >&2
+      echo "--- end npm debug log ---" >&2
+    done
+  fi
 }
 
 # ── preflight ──────────────────────────────────────────────────────────────
