@@ -196,6 +196,9 @@ if [ "$DEV_SANDBOX_INTERACTIVE" = true ]; then
   dev_mounts=(--dev /dev)
 fi
 
+# Payload clients terminate TLS against proxy.py's minted leaf, so they trust
+# the sandbox MITM CA. The proxy gets real-ca.pem separately in the payload and
+# uses it only to verify the real upstream side of the connection.
 exec bwrap \
   --unshare-pid \
   --die-with-parent --proc /proc --tmpfs /tmp \
@@ -216,7 +219,7 @@ exec bwrap \
   --setenv CURL_CA_BUNDLE /work/certs/ca.pem \
   --setenv SSL_CERT_FILE /work/certs/ca.pem \
   --setenv GIT_SSL_CAINFO /work/certs/ca.pem \
-  --setenv NODE_EXTRA_CA_CERTS /work/certs/real-ca.pem \
+  --setenv NODE_EXTRA_CA_CERTS /work/certs/ca.pem \
   --setenv OPENSSL_CONF /work/certs/openssl.cnf \
   --setenv HTTP_PROXY http://127.0.0.1:8080 \
   --setenv HTTPS_PROXY http://127.0.0.1:8080 \
@@ -227,6 +230,7 @@ exec bwrap \
   "${node_env[@]}" \
   "${electron_env[@]}" \
   -- "$DEV_SANDBOX_BASH" -ceu '
+    # Unlike payload clients, the proxy verifies the real upstream certificate.
     python3 /work/proxy.py /work/http /work/certs /work/certs/real-ca.pem >/work/logs/proxy.log 2>&1 &
     proxy_pid=$!
     cleanup() {

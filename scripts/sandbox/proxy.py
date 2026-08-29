@@ -12,7 +12,9 @@ forwards to the real host:
   still has to reach PyPI and npm.
 
 HTTPS is intercepted by minting a per-host certificate from the sandbox's own
-throwaway CA, which the payload trusts via CURL_CA_BUNDLE / SSL_CERT_FILE.
+throwaway CA, which payload clients trust via CURL_CA_BUNDLE, SSL_CERT_FILE, or
+NODE_EXTRA_CA_CERTS. This client-side CA is distinct from the real CA bundle
+that the proxy uses to verify an HTTPS server when forwarding upstream.
 
 Usage: proxy.py <fixture-root> <certs-dir> <real-ca-bundle>
 """
@@ -151,6 +153,8 @@ def relay(source, destination):
 
 
 def forward_https(conn, host, port, request):
+    # This is the upstream trust boundary. Payload clients never receive these
+    # certificates; they receive the sandbox-CA leaf minted in handle_connect.
     context = ssl.create_default_context(cafile=str(REAL_CA))
     with socket.create_connection((host, port), timeout=UPSTREAM_TIMEOUT_SECONDS) as raw:
         with context.wrap_socket(raw, server_hostname=host) as upstream:
@@ -223,14 +227,19 @@ def handle(conn):
         print(f'proxy request failed: {error!r}', file=sys.stderr, flush=True)
 
 
+def serve(server):
+    """Accept connections on an already-bound socket."""
+    server.listen()
+    while True:
+        conn, _ = server.accept()
+        threading.Thread(target=handle, args=(conn,), daemon=True).start()
+
+
 def main():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server.bind(LISTEN_ADDRESS)
-        server.listen()
-        while True:
-            conn, _ = server.accept()
-            threading.Thread(target=handle, args=(conn,), daemon=True).start()
+        serve(server)
 
 
 if __name__ == '__main__':
