@@ -17,10 +17,16 @@ transport:
 auth:
   type: oauth
 
+# Atlassian exposes mutations alongside reads. Keep the server untrusted so
+# tools without readOnlyHint=true require one-call approval before any RPC.
+trust: untrusted
+
 # Keep the default agent surface to the Jira operations needed for a coding
-# workflow. Users can inspect and change this selection after authentication.
+# workflow, including the cloudId discovery prerequisite required by every
+# Jira call. Users can inspect and change this selection after authentication.
 tools:
   default_enabled:
+    - getAccessibleAtlassianResources
     - getJiraIssue
     - searchJiraIssuesUsingJql
     - getTransitionsForJiraIssue
@@ -41,6 +47,7 @@ suggest:
 
 post_install: |
   Run `hermes mcp login atlassian`, then approve the intended Atlassian
-  site and Jira access. After authentication, run
+  site and Jira access. Keep `trust: untrusted` so write-capable tools require
+  one-call approval. After authentication, run
   `hermes mcp configure atlassian` if the server's tool names changed,
   then start a fresh session or reload MCP tools.

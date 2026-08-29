@@ -117,6 +117,34 @@ class TestTrustGateAtCallTime:
         assert "error" in json.loads(raw)
         assert "did not approve" in json.loads(raw)["error"]
 
+    def test_atlassian_catalog_denial_blocks_comment_rpc(
+        self, fake_session, monkeypatch
+    ):
+        """The shipped Jira config activates the runtime write approval gate."""
+        monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
+        from hermes_cli.mcp_catalog import _build_server_config, get_entry
+
+        entry = get_entry("atlassian")
+        assert entry is not None
+        config = _build_server_config(entry, None)
+        tool = SimpleNamespace(
+            name="addCommentToJiraIssue",
+            annotations=SimpleNamespace(readOnlyHint=False),
+        )
+        mcp_tool._record_tool_trust_metadata("srv", config, [tool])
+        handler = mcp_tool._make_tool_handler(
+            "srv", "addCommentToJiraIssue", 30.0
+        )
+
+        with patch(
+            "tools.approval.request_elicitation_consent",
+            return_value="decline",
+        ):
+            raw = handler({"cloudId": "example", "issueIdOrKey": "ENG-1"})
+
+        fake_session.call_tool.assert_not_awaited()
+        assert "did not approve" in json.loads(raw)["error"]
+
     def test_read_only_tool_on_untrusted_server_skips_approval(
         self, fake_session
     ):

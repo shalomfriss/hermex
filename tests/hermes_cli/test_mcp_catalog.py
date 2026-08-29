@@ -123,6 +123,30 @@ class TestManifestParsing:
         assert e.install is None
         assert e.suggest is None
 
+    def test_untrusted_manifest_persists_runtime_trust_gate(self, catalog_dir):
+        _write_manifest(
+            catalog_dir,
+            "demo",
+            _basic_manifest(trust="untrusted"),
+        )
+        from hermes_cli.mcp_catalog import _build_server_config, list_catalog
+
+        entry = list_catalog()[0]
+
+        assert entry.trust == "untrusted"
+        assert _build_server_config(entry, None)["trust"] == "untrusted"
+
+    def test_unknown_manifest_trust_is_rejected(self, catalog_dir):
+        path = _write_manifest(
+            catalog_dir,
+            "demo",
+            _basic_manifest(trust="trusted-ish"),
+        )
+        from hermes_cli.mcp_catalog import CatalogError, _parse_manifest
+
+        with pytest.raises(CatalogError, match="trust"):
+            _parse_manifest(path)
+
     def test_suggest_block_parsed_and_normalized(self, catalog_dir):
         _write_manifest(
             catalog_dir,
@@ -610,7 +634,30 @@ class TestShippedCatalog:
         assert entry.auth.type == "oauth"
         assert entry.suggest is not None
         assert "atlassian.net" in entry.suggest.hosts
+        assert entry.trust == "untrusted"
         assert entry.tools.default_enabled == [
+            "getAccessibleAtlassianResources",
+            "getJiraIssue",
+            "searchJiraIssuesUsingJql",
+            "getTransitionsForJiraIssue",
+            "addCommentToJiraIssue",
+            "transitionJiraIssue",
+        ]
+
+    def test_atlassian_install_applies_cloud_id_discovery_and_trust_gate(
+        self, monkeypatch
+    ):
+        """A fresh offline install is usable and gates external writes."""
+        monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
+        from hermes_cli.config import load_config
+        from hermes_cli.mcp_catalog import install_entry
+
+        install_entry(_entry("atlassian"), enable=True)
+
+        server = load_config()["mcp_servers"]["atlassian"]
+        assert server["trust"] == "untrusted"
+        assert server["tools"]["include"] == [
+            "getAccessibleAtlassianResources",
             "getJiraIssue",
             "searchJiraIssuesUsingJql",
             "getTransitionsForJiraIssue",

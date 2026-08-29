@@ -138,6 +138,13 @@ bootstrap commands, and setup notes — with the `source:` rendered as a
 clickable link, so you can inspect exactly what an entry connects to or runs
 before clicking Install.
 
+Catalog manifests may declare `trust: untrusted`. Hermes persists that tier in
+`mcp_servers.<name>.trust`, and write-capable tools on that server require
+one-call approval before the remote RPC runs. A tool is treated as write-capable
+unless its discovery annotation has `readOnlyHint: true`; missing or malformed
+annotations fail closed. Catalog entries without a `trust` field preserve the
+backward-compatible `full` trust default.
+
 ### Manifest version compatibility
 
 Manifests pin a `manifest_version`. The catalog is forward-compatible: if a
@@ -314,20 +321,25 @@ hermes mcp test atlassian
 ```
 
 During login, approve the intended Atlassian account and site and only the Jira
-access your work requires. The catalog defaults to five coding-workflow tools:
-`getJiraIssue`, `searchJiraIssuesUsingJql`, `getTransitionsForJiraIssue`,
-`addCommentToJiraIssue`, and `transitionJiraIssue`. The configure step lets you
+access your work requires. The catalog defaults to six coding-workflow tools:
+`getAccessibleAtlassianResources`, `getJiraIssue`,
+`searchJiraIssuesUsingJql`, `getTransitionsForJiraIssue`,
+`addCommentToJiraIssue`, and `transitionJiraIssue`. The first tool discovers the
+site `cloudId` required by every later Jira call. The configure step lets you
 inspect or adjust that surface after authentication. Start a fresh Hermes
 session or use the existing MCP reload flow so the authenticated tools are
 rediscovered.
 
-Begin with a read-only check against a known issue key. A safe coding workflow
-is to read the issue and acceptance criteria, implement and test the change,
-post a concise comment containing the canonical pull-request URL only when
-requested, then discover valid workflow transitions and transition the issue
-only when explicitly authorized. Transition IDs and status names vary by Jira
-workflow, so never assume a global mapping. Read the issue again after a comment
-or transition before reporting that the write succeeded.
+Begin by calling `getAccessibleAtlassianResources` and selecting the intended
+site's `cloudId`, then perform a read-only check against a known issue key. A
+safe coding workflow is to read the issue and acceptance criteria, implement
+and test the change, post a concise comment containing the canonical
+pull-request URL only when requested, then discover valid workflow transitions
+and transition the issue only when explicitly authorized. The installed
+`trust: untrusted` tier requires one-call approval before write-capable tools
+reach Atlassian. Denying approval blocks the RPC. Transition IDs and status
+names vary by Jira workflow, so never assume a global mapping. Read the issue
+again after a comment or transition before reporting that the write succeeded.
 
 If setup or a call fails:
 

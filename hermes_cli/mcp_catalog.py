@@ -143,6 +143,9 @@ class CatalogEntry:
     source: str
     transport: TransportSpec
     auth: AuthSpec
+    # Optional runtime trust tier written to mcp_servers.<name>.trust.
+    # Omitted manifests preserve the backward-compatible full-trust default.
+    trust: Optional[str] = None
     tools: ToolsSpec = field(default_factory=ToolsSpec)
     install: Optional[InstallSpec] = None
     post_install: str = ""
@@ -269,6 +272,13 @@ def _parse_manifest(path: Path) -> CatalogEntry:
                 f"'{_required_key}' (the key the Authorization header references)"
             )
 
+    trust = data.get("trust")
+    if trust is not None:
+        if not isinstance(trust, str) or trust not in {"full", "untrusted"}:
+            raise CatalogError(
+                f"{path}: 'trust' must be 'full' or 'untrusted'"
+            )
+
     tools_raw = data.get("tools") or {}
     if not isinstance(tools_raw, dict):
         raise CatalogError(f"{path}: 'tools' must be a mapping")
@@ -340,6 +350,7 @@ def _parse_manifest(path: Path) -> CatalogEntry:
         source=source,
         transport=transport,
         auth=auth,
+        trust=trust,
         tools=tools_spec,
         install=install,
         post_install=str(data.get("post_install") or ""),
@@ -579,6 +590,8 @@ def _build_server_config(
             from hermes_cli.mcp_config import _bearer_auth_headers
 
             cfg["headers"] = _bearer_auth_headers(entry.name)
+    if entry.trust is not None:
+        cfg["trust"] = entry.trust
     return cfg
 
 
