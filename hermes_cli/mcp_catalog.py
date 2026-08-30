@@ -8,8 +8,9 @@ picker, which flows them through any required env/OAuth setup).
 
 Catalog policy:
 - Entries are added only by merging a PR into hermes-agent. Presence in the
-  ``optional-mcps/`` directory = Nous approval. No community tier, no trust
-  signals beyond "it's in the catalog".
+  ``optional-mcps/`` directory = Nous approval. There is no community catalog
+  tier; a manifest's optional runtime ``trust`` gate is separate from catalog
+  provenance.
 - Manifests pin transport details (commands, args, refs). Pins follow the
   same supply-chain rules as pyproject dependencies: exact versions for
   package launchers (``uvx pkg==X``, ``npx pkg@X``), full commit SHAs for
