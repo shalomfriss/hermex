@@ -12,10 +12,9 @@ forwards to the real host:
   still has to reach PyPI and npm.
 
 HTTPS is intercepted by minting a per-host certificate from the sandbox's own
-throwaway CA, which payload clients trust via CURL_CA_BUNDLE, SSL_CERT_FILE,
-NODE_EXTRA_CA_CERTS, or npm's cafile. This client-side CA is distinct from the
-real CA bundle that the proxy uses to verify an HTTPS server when forwarding
-upstream.
+throwaway CA, which payload clients trust via CURL_CA_BUNDLE, SSL_CERT_FILE, or
+NODE_EXTRA_CA_CERTS. This client-side CA is distinct from the real CA bundle
+that the proxy uses to verify an HTTPS server when forwarding upstream.
 
 Usage: proxy.py <fixture-root> <certs-dir> <real-ca-bundle>
 """

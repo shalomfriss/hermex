@@ -72,9 +72,6 @@ def test_stage2_node_trust_completes_https_through_sandbox_proxy(tmp_path: Path)
     match = re.search(r"--setenv NODE_EXTRA_CA_CERTS /work/certs/([^ ]+) ", stage2)
     assert match, "stage2-run.sh must set NODE_EXTRA_CA_CERTS to a sandbox CA file"
     configured_ca = certs / match.group(1)
-    npm_match = re.search(r"--setenv npm_config_cafile /work/certs/([^ ]+) ", stage2)
-    assert npm_match, "stage2-run.sh must give npm an explicit sandbox CA file"
-    configured_npm_ca = certs / npm_match.group(1)
 
     proxy = _load_proxy(fixture_root, certs, certs / "real-ca.pem")
     server = socket.socket()
@@ -91,8 +88,22 @@ def test_stage2_node_trust_completes_https_through_sandbox_proxy(tmp_path: Path)
         raise AssertionError("sandbox proxy did not start")
 
     env = os.environ.copy()
+    for inherited in (
+        "NODE_OPTIONS",
+        "NODE_TLS_REJECT_UNAUTHORIZED",
+        "NODE_USE_SYSTEM_CA",
+        "SSL_CERT_FILE",
+        "npm_config_ca",
+        "npm_config_cafile",
+        "NPM_CONFIG_CA",
+        "NPM_CONFIG_CAFILE",
+    ):
+        env.pop(inherited, None)
     env["NODE_EXTRA_CA_CERTS"] = str(configured_ca)
-    env["npm_config_cafile"] = str(configured_npm_ca)
+    env["npm_config_strict_ssl"] = "true"
+    env["NPM_CONFIG_STRICT_SSL"] = "true"
+    env["npm_config_userconfig"] = str(tmp_path / "empty-user-npmrc")
+    env["npm_config_globalconfig"] = str(tmp_path / "empty-global-npmrc")
     env["HTTP_PROXY"] = f"http://127.0.0.1:{port}"
     env["HTTPS_PROXY"] = f"http://127.0.0.1:{port}"
     env["NO_PROXY"] = ""
