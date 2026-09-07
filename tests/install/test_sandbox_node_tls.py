@@ -460,6 +460,7 @@ def test_response_relay_rewrites_connection_and_respects_content_length(
     [
         b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\nx",
         b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 1\r\n\r\n0\r\n\r\n",
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding : chunked\r\nContent-Length: 1\r\n\r\nx",
         b"HTTP/1.1 nope\r\nContent-Length: 1\r\n\r\nx",
     ],
 )

@@ -36,6 +36,9 @@ LISTEN_ADDRESS = ('127.0.0.1', 8080)
 MAX_REQUEST_BYTES = 65536
 UPSTREAM_TIMEOUT_SECONDS = 30
 CERT_VALIDITY_DAYS = 2
+HTTP_TOKEN_BYTES = frozenset(
+    b"!#$%&'*+-.^_`|~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+)
 
 
 def _safe_host(host):
@@ -237,6 +240,8 @@ def relay_response(source, destination, method, allow_keepalive=True):
         if b':' not in line:
             raise ConnectionError('malformed upstream HTTP header')
         name, value = line.split(b':', 1)
+        if not name or any(byte not in HTTP_TOKEN_BYTES for byte in name):
+            raise ConnectionError('malformed upstream HTTP header name')
         lower_name = name.lower()
         if lower_name in (b'connection', b'keep-alive', b'proxy-connection'):
             continue
