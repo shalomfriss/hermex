@@ -370,7 +370,9 @@ def test_upstream_tls_handshake_keeps_connect_timeout(tmp_path: Path) -> None:
     assert errors[0].error_name == "TimeoutError"
 
 
-def test_connect_tunnel_closes_with_tls_close_notify(tmp_path: Path) -> None:
+def test_connect_tunnel_reuses_framed_responses_then_closes_cleanly(
+    tmp_path: Path,
+) -> None:
     openssl = shutil.which("openssl")
     assert openssl
     certs = tmp_path / "certs"
@@ -378,12 +380,18 @@ def test_connect_tunnel_closes_with_tls_close_notify(tmp_path: Path) -> None:
     _mint_ca(openssl, certs / "ca.pem", certs / "ca.key", "Sandbox MITM CA")
     _mint_ca(openssl, certs / "real-ca.pem", certs / "real-ca.key", "Upstream CA")
     proxy = _load_proxy(tmp_path / "http", certs, certs / "real-ca.pem")
+    seen = []
 
-    def fake_forward(conn, host, port, request) -> None:
+    def fake_forward(conn, host, port, request) -> bool:
+        seen.append(request.split(b" ", 2)[1])
+        keep_alive = len(seen) == 1
+        connection = b"keep-alive" if keep_alive else b"close"
         conn.sendall(
-            b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\n"
-            b"Connection: close\r\n\r\nx"
+            b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nConnection: "
+            + connection
+            + b"\r\n\r\nx"
         )
+        return keep_alive
 
     proxy.forward_https = fake_forward
     server, client = socket.socketpair()
@@ -402,14 +410,49 @@ def test_connect_tunnel_closes_with_tls_close_notify(tmp_path: Path) -> None:
         server_hostname="registry.npmjs.org",
         suppress_ragged_eofs=False,
     ) as tls:
-        tls.sendall(b"GET /package HTTP/1.1\r\nHost: registry.npmjs.org\r\n\r\n")
-        response = bytearray()
-        while b"\r\n\r\nx" not in response:
-            response.extend(tls.recv(4096))
+        for path in (b"/first", b"/second"):
+            tls.sendall(b"GET " + path + b" HTTP/1.1\r\nHost: registry.npmjs.org\r\n\r\n")
+            response = bytearray()
+            while b"\r\n\r\nx" not in response:
+                response.extend(tls.recv(4096))
         assert tls.recv(1) == b"", "proxy did not send a TLS close-notify"
 
     worker.join(timeout=2)
     assert not worker.is_alive()
+    assert seen == [b"/first", b"/second"]
+
+
+class _ChunkSource:
+    def __init__(self, chunks: list[bytes]) -> None:
+        self.chunks = chunks
+
+    def recv(self, _size: int) -> bytes:
+        return self.chunks.pop(0) if self.chunks else b""
+
+
+def test_response_relay_rewrites_connection_and_respects_content_length(
+    tmp_path: Path,
+) -> None:
+    openssl = shutil.which("openssl")
+    assert openssl
+    real_ca = tmp_path / "real-ca.pem"
+    real_key = tmp_path / "real-ca.key"
+    _mint_ca(openssl, real_ca, real_key, "Real CA")
+    proxy = _load_proxy(tmp_path / "http", tmp_path, real_ca)
+    source = _ChunkSource(
+        [
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhe",
+            b"llo",
+        ]
+    )
+    destination = _Collector()
+
+    keep_alive = proxy.relay_response(source, destination, "GET")
+
+    assert keep_alive is True
+    assert b"Connection: close" not in destination.data
+    assert b"Connection: keep-alive" in destination.data
+    assert destination.data.endswith(b"\r\n\r\nhello")
 
 
 def test_e2e_archives_fail_closed_node_resolution_manifests() -> None:

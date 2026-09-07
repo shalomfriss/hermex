@@ -184,7 +184,7 @@ def close_request(request, target=None):
         lines[0] = b' '.join((method, target.encode(), version))
     lines = [
         line for line in lines
-        if not line.lower().startswith(b'proxy-connection:')
+        if not line.lower().startswith((b'connection:', b'keep-alive:', b'proxy-connection:'))
     ]
     lines.append(b'Connection: close')
     return b'\r\n'.join(lines) + separator + body
@@ -196,6 +196,69 @@ def relay(source, destination):
         if not chunk:
             return
         destination.sendall(chunk)
+
+
+def relay_response(source, destination, method, allow_keepalive=True):
+    """Relay one HTTP response and return whether the client TLS may be reused."""
+    data = b''
+    while b'\r\n\r\n' not in data and len(data) < MAX_REQUEST_BYTES:
+        chunk = source.recv(4096)
+        if not chunk:
+            break
+        data += chunk
+    headers, separator, body = data.partition(b'\r\n\r\n')
+    if not separator:
+        destination.sendall(data)
+        relay(source, destination)
+        return False
+
+    lines = headers.split(b'\r\n')
+    try:
+        status = int(lines[0].split(b' ', 2)[1])
+    except (IndexError, ValueError):
+        status = 0
+    content_length = None
+    chunked = False
+    forwarded = [lines[0]]
+    for line in lines[1:]:
+        lower = line.lower()
+        if lower.startswith((b'connection:', b'keep-alive:', b'proxy-connection:')):
+            continue
+        if lower.startswith(b'content-length:'):
+            try:
+                content_length = int(line.split(b':', 1)[1].strip())
+            except ValueError:
+                content_length = None
+        if lower.startswith(b'transfer-encoding:') and b'chunked' in lower:
+            chunked = True
+        forwarded.append(line)
+
+    no_body = method.upper() == 'HEAD' or status in (204, 304) or 100 <= status < 200
+    framed = no_body or content_length is not None or chunked
+    keepalive = allow_keepalive and framed
+    forwarded.append(b'Connection: keep-alive' if keepalive else b'Connection: close')
+    destination.sendall(b'\r\n'.join(forwarded) + separator)
+
+    if no_body:
+        return keepalive
+    if content_length is not None:
+        remaining = content_length
+        if body:
+            sent = body[:remaining]
+            destination.sendall(sent)
+            remaining -= len(sent)
+        while remaining:
+            chunk = source.recv(min(MAX_REQUEST_BYTES, remaining))
+            if not chunk:
+                raise ConnectionError('upstream response ended before Content-Length')
+            destination.sendall(chunk)
+            remaining -= len(chunk)
+        return keepalive
+
+    if body:
+        destination.sendall(body)
+    relay(source, destination)
+    return keepalive
 
 
 def forward_https(conn, host, port, request):
@@ -227,7 +290,14 @@ def forward_https(conn, host, port, request):
             started = time.monotonic()
             try:
                 upstream.sendall(close_request(request))
-                relay(upstream, conn)
+                method = request.split(b' ', 1)[0].decode('ascii', 'replace')
+                client_closes = any(
+                    line.lower().strip() == b'connection: close'
+                    for line in request.split(b'\r\n')[1:]
+                )
+                return relay_response(
+                    upstream, conn, method, allow_keepalive=not client_closes
+                )
             except Exception as error:
                 raise _stage_error('relay', host, port, started, error) from error
 
@@ -268,16 +338,19 @@ def handle_connect(conn, target):
     except Exception as error:
         raise _stage_error('client_handshake', host, port, started, error) from error
     try:
-        nested = read_request(tls)
-        if not nested:
-            return
-        line = nested.split(b'\r\n', 1)[0].decode('iso-8859-1')
-        nested_target = line.split(' ', 2)[1]
-        found = file_for(host, nested_target)
-        if found is not None:
-            respond_fixture(tls, found)
-        else:
-            forward_https(tls, host, port, nested)
+        keepalive = True
+        while keepalive:
+            nested = read_request(tls)
+            if not nested:
+                return
+            line = nested.split(b'\r\n', 1)[0].decode('iso-8859-1')
+            nested_target = line.split(' ', 2)[1]
+            found = file_for(host, nested_target)
+            if found is not None:
+                respond_fixture(tls, found)
+                keepalive = False
+            else:
+                keepalive = forward_https(tls, host, port, nested)
     finally:
         # A bare SSLSocket.close() drops TCP without TLS close-notify. Undici can
         # receive that EOF while its response parser is paused on backpressure
