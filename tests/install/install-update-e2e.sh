@@ -112,6 +112,19 @@ collect_sandbox_logs() {
     cat "$dest/proxy.log" >&2
     echo "--- end proxy.log ---" >&2
   fi
+  # npm's --silent output can be empty even when the command fails. Preserve
+  # npm's own debug logs so a candidate matrix failure remains diagnosable.
+  local npm_logs="$SANDBOX_ROOT/home/.npm/_logs"
+  if [ -d "$npm_logs" ]; then
+    mkdir -p "$dest/npm"
+    cp -a "$npm_logs/." "$dest/npm/" 2>/dev/null || true
+    for npm_log in "$dest/npm"/*; do
+      [ -f "$npm_log" ] || continue
+      echo "--- npm debug log: $(basename "$npm_log") ---" >&2
+      cat "$npm_log" >&2
+      echo "--- end npm debug log ---" >&2
+    done
+  fi
 }
 
 # ── preflight ──────────────────────────────────────────────────────────────
@@ -125,6 +138,7 @@ if command -v sandbox >/dev/null 2>&1; then
 elif command -v bwrap >/dev/null 2>&1; then
   SANDBOX=("$REPO_ROOT/scripts/dev-sandbox.sh")
 else
+  # shellcheck disable=SC2016  # Backticks are documentation, not substitution.
   fail 'no usable sandbox: enter the Nix devShell (for `sandbox`) or install bubblewrap'
 fi
 
@@ -189,6 +203,19 @@ install_in_sandbox() {
   local args=(install --persistent)
   [ -n "$ref" ] && args+=(--install-ref "$ref")
 
+  # Keep production installer output unchanged, but make the candidate re-run
+  # diagnosable: npm's CLI --silent overrides npm_config_loglevel and suppresses
+  # native lifecycle failures. Serve an E2E-only copy with that one flag changed.
+  if [ -z "$ref" ]; then
+    local diagnostic_installer="$LOG_DIR/$tag-installer.sh"
+    [ "$(grep -c 'npm install --silent' "$REPO_ROOT/scripts/install.sh")" -ge 1 ] \
+      || fail 'expected npm --silent commands in the candidate installer'
+    sed 's/npm install --silent/npm install --loglevel verbose/' \
+      "$REPO_ROOT/scripts/install.sh" > "$diagnostic_installer"
+    chmod +x "$diagnostic_installer"
+    args+=(--installer "$diagnostic_installer")
+  fi
+
   # Installer flags have to match the installer being run, not this checkout's.
   # Older releases reject options added later ("Unknown option: --skip-browser"),
   # and this test deliberately installs releases from months back. --skip-setup
@@ -223,6 +250,105 @@ install_in_sandbox() {
 
 in_sandbox() { "${SANDBOX[@]}" --persistent bash -lc "$1"; }
 
+# Archive the exact Node/npm and trust resolution at every install boundary.
+# The manifest is deliberately limited to executable/config paths, versions,
+# and certificate fingerprints: no npm environment dump, URLs, headers, or
+# credentials can enter the artifact. The managed phase fails closed if PATH
+# resolves outside the Node installed under the sandbox user's HERMES_HOME.
+capture_node_resolution_manifest() {
+  local tag="$1"
+  local expectation="$2"
+  local manifest="$LOG_DIR/node-resolution-$tag.txt"
+  local probe
+  # shellcheck disable=SC2016  # This script expands only inside the sandbox.
+  probe='
+set -eu
+node_path="$(command -v node || true)"
+npm_path="$(command -v npm || true)"
+node_version="missing"
+npm_version="missing"
+process_exec_path="missing"
+strict_ssl="missing"
+cafile="missing"
+nodedir="missing"
+
+if [ -n "$node_path" ]; then
+  node_version="$(node --version)"
+  process_exec_path="$(node -p process.execPath)"
+fi
+if [ -n "$npm_path" ]; then
+  npm_version="$(npm --version)"
+  strict_ssl="$(npm config get strict-ssl)"
+  cafile="$(npm config get cafile)"
+  nodedir="$(npm config get nodedir)"
+fi
+sandbox_ca_sha256="$(openssl x509 -in /work/certs/ca.pem -noout -fingerprint -sha256 | cut -d= -f2)"
+upstream_ca_sha256="$(openssl x509 -in /work/certs/real-ca.pem -noout -fingerprint -sha256 | cut -d= -f2)"
+
+printf "%s\n" \
+  "phase=$NODE_MANIFEST_PHASE" \
+  "node_path=$node_path" \
+  "npm_path=$npm_path" \
+  "node_version=$node_version" \
+  "npm_version=$npm_version" \
+  "process_exec_path=$process_exec_path" \
+  "strict_ssl=$strict_ssl" \
+  "cafile=$cafile" \
+  "nodedir=$nodedir" \
+  "sandbox_ca_sha256=$sandbox_ca_sha256" \
+  "upstream_ca_sha256=$upstream_ca_sha256"
+
+[ "${NODE_EXTRA_CA_CERTS:-}" = /work/certs/ca.pem ] || {
+  echo "assertion_error=unexpected_NODE_EXTRA_CA_CERTS" >&2
+  exit 1
+}
+[ -z "${NODE_TLS_REJECT_UNAUTHORIZED:-}" ] || {
+  echo "assertion_error=NODE_TLS_REJECT_UNAUTHORIZED_present" >&2
+  exit 1
+}
+if [ -n "$npm_path" ]; then
+  [ "$strict_ssl" = true ] || {
+    echo "assertion_error=strict_ssl_not_true" >&2
+    exit 1
+  }
+  case "$nodedir" in
+    ""|null|undefined) ;;
+    *) [ -d "$nodedir" ] || {
+      echo "assertion_error=nodedir_missing_in_sandbox" >&2
+      exit 1
+    } ;;
+  esac
+fi
+if [ "$NODE_MANIFEST_EXPECT" = managed ]; then
+  [ -n "$node_path" ] && [ -n "$npm_path" ] || {
+    echo "assertion_error=managed_node_or_npm_missing" >&2
+    exit 1
+  }
+  [ "$(readlink -f "$node_path")" = "$HOME/.hermes/node/bin/node" ] || {
+    echo "assertion_error=node_not_managed" >&2
+    exit 1
+  }
+  case "$(readlink -f "$npm_path")" in
+    "$HOME/.hermes/node/"*) ;;
+    *) echo "assertion_error=npm_not_managed" >&2; exit 1 ;;
+  esac
+  [ "$process_exec_path" = "$HOME/.hermes/node/bin/node" ] || {
+    echo "assertion_error=process_execPath_not_managed" >&2
+    exit 1
+  }
+fi
+'
+
+  if ! in_sandbox "NODE_MANIFEST_PHASE='$tag' NODE_MANIFEST_EXPECT='$expectation' bash -c $(printf '%q' "$probe")" \
+      >"$manifest" 2>&1; then
+    cat "$manifest" >&2
+    collect_sandbox_logs "$tag-manifest"
+    fail "Node resolution manifest assertion failed at $tag"
+  fi
+  cat "$manifest"
+  ok "archived Node resolution manifest ($manifest)"
+}
+
 # fake main's SHA is read fresh whenever it is needed, never cached across a
 # sandbox invocation: each invocation re-derives it from the worktree.
 sandbox_target() { in_sandbox "git --git-dir=$FAKE_REMOTE rev-parse main" | tr -d '[:space:]'; }
@@ -247,8 +373,10 @@ require_hermes_works() {
 }
 
 # ── install the earlier Hermes ─────────────────────────────────────────────
+capture_node_resolution_manifest pre-install baseline
 step "installing upstream $INSTALL_REF (real curl | install.sh: uv, Python, Node, venv)"
 install_in_sandbox "install of upstream $INSTALL_REF" "$INSTALL_REF" install
+capture_node_resolution_manifest post-install managed
 
 BASE="$(sandbox_head)"
 TARGET="$(sandbox_target)"
@@ -262,6 +390,7 @@ require_hermes_works 'after install'
 case "$ROUTE" in
   update)
     step 'ROUTE: hermes update'
+    capture_node_resolution_manifest pre-update managed
     # `--yes` reaches the update subcommand only in later releases, and argparse
     # rejects the whole invocation when it does not exist. Ask the installed
     # hermes which it accepts; older ones read the prompt from stdin, so close it.
@@ -276,14 +405,17 @@ case "$ROUTE" in
     fi
     require_landed_on_target 'hermes update'
     require_hermes_works 'after hermes update'
+    capture_node_resolution_manifest post-update managed
     ;;
   installer)
     step 'ROUTE: installer re-run over the existing checkout'
+    capture_node_resolution_manifest pre-reinstall managed
     # No ref: serves this worktree's installer and points fake main at this
     # checkout, which is what the re-run must land on.
     install_in_sandbox 'installer re-run' '' reinstall
     require_landed_on_target 'installer re-run'
     require_hermes_works 'after installer re-run'
+    capture_node_resolution_manifest post-reinstall managed
     ;;
 esac
 

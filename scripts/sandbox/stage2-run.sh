@@ -206,6 +206,7 @@ fi
 # Payload clients terminate TLS against proxy.py's minted leaf, so they trust
 # the sandbox MITM CA. The proxy gets real-ca.pem separately in the payload and
 # uses it only to verify the real upstream side of the connection.
+# shellcheck disable=SC2016  # The single-quoted payload expands inside bwrap.
 exec bwrap \
   --unshare-pid \
   --die-with-parent --proc /proc --tmpfs /tmp \
@@ -227,6 +228,7 @@ exec bwrap \
   --setenv SSL_CERT_FILE /work/certs/ca.pem \
   --setenv GIT_SSL_CAINFO /work/certs/ca.pem \
   --setenv NODE_EXTRA_CA_CERTS /work/certs/ca.pem \
+  --setenv npm_config_strict_ssl true \
   --setenv OPENSSL_CONF /work/certs/openssl.cnf \
   --setenv HTTP_PROXY http://127.0.0.1:8080 \
   --setenv HTTPS_PROXY http://127.0.0.1:8080 \

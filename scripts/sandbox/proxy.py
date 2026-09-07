@@ -19,6 +19,7 @@ that the proxy uses to verify an HTTPS server when forwarding upstream.
 Usage: proxy.py <fixture-root> <certs-dir> <real-ca-bundle>
 """
 
+import ipaddress
 import os
 import pathlib
 import socket
@@ -26,6 +27,7 @@ import ssl
 import subprocess
 import sys
 import threading
+import time
 from urllib.parse import unquote, urlsplit
 
 ROOT, CERTS, REAL_CA = map(pathlib.Path, sys.argv[1:])
@@ -34,6 +36,53 @@ LISTEN_ADDRESS = ('127.0.0.1', 8080)
 MAX_REQUEST_BYTES = 65536
 UPSTREAM_TIMEOUT_SECONDS = 30
 CERT_VALIDITY_DAYS = 2
+HTTP_TOKEN_BYTES = frozenset(
+    b"!#$%&'*+-.^_`|~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+)
+
+
+def _safe_host(host):
+    """Return a log-safe hostname without copying request data into logs."""
+    value = str(host)
+    if not value or len(value) > 253:
+        return 'unknown'
+    if ':' in value:
+        candidate = value[1:-1] if value.startswith('[') and value.endswith(']') else value
+        try:
+            ipaddress.ip_address(candidate)
+        except ValueError:
+            return 'unknown'
+        return candidate
+    if any(
+        not char.isascii() or not (char.isalnum() or char in '.:_-')
+        for char in value
+    ):
+        return 'unknown'
+    return value
+
+
+class ProxyStageError(RuntimeError):
+    """Secret-safe failure at one proxy transport boundary."""
+
+    def __init__(self, stage, host, port, error, elapsed_ms):
+        self.stage = stage
+        self.host = _safe_host(host)
+        self.port = int(port)
+        self.error_name = type(error).__name__
+        self.elapsed_ms = round(elapsed_ms)
+        super().__init__(str(self))
+
+    def __str__(self):
+        return (
+            f'stage={self.stage} host={self.host} port={self.port} '
+            f'error={self.error_name} elapsed_ms={self.elapsed_ms}'
+        )
+
+
+def _stage_error(stage, host, port, started, error):
+    return ProxyStageError(
+        stage, host, port, error, (time.monotonic() - started) * 1000
+    )
 
 
 def read_request(conn):
@@ -138,7 +187,7 @@ def close_request(request, target=None):
         lines[0] = b' '.join((method, target.encode(), version))
     lines = [
         line for line in lines
-        if not line.lower().startswith(b'proxy-connection:')
+        if not line.lower().startswith((b'connection:', b'keep-alive:', b'proxy-connection:'))
     ]
     lines.append(b'Connection: close')
     return b'\r\n'.join(lines) + separator + body
@@ -152,14 +201,146 @@ def relay(source, destination):
         destination.sendall(chunk)
 
 
+def relay_response(source, destination, method, allow_keepalive=True):
+    """Relay one HTTP response and return whether the client TLS may be reused."""
+    data = b''
+    while b'\r\n\r\n' not in data and len(data) < MAX_REQUEST_BYTES:
+        chunk = source.recv(4096)
+        if not chunk:
+            break
+        data += chunk
+    headers, separator, body = data.partition(b'\r\n\r\n')
+    if not separator:
+        destination.sendall(data)
+        relay(source, destination)
+        return False
+
+    lines = headers.split(b'\r\n')
+    status_parts = lines[0].split(b' ', 2)
+    if (
+        len(status_parts) < 2
+        or status_parts[0] not in (b'HTTP/1.0', b'HTTP/1.1')
+        or len(status_parts[1]) != 3
+        or not status_parts[1].isdigit()
+    ):
+        raise ConnectionError('malformed upstream HTTP status line')
+    status = int(status_parts[1])
+    # Forward an informational response and its eventual final response as one
+    # close-delimited exchange. Reusing the client connection here would require
+    # parsing another header block from the already-buffered bytes.
+    if 100 <= status < 200:
+        destination.sendall(data)
+        relay(source, destination)
+        return False
+
+    content_lengths = []
+    transfer_encodings = []
+    forwarded = [lines[0]]
+    for line in lines[1:]:
+        if b':' not in line:
+            raise ConnectionError('malformed upstream HTTP header')
+        name, value = line.split(b':', 1)
+        if not name or any(byte not in HTTP_TOKEN_BYTES for byte in name):
+            raise ConnectionError('malformed upstream HTTP header name')
+        lower_name = name.lower()
+        if lower_name in (b'connection', b'keep-alive', b'proxy-connection'):
+            continue
+        if lower_name == b'content-length':
+            values = [part.strip() for part in value.split(b',')]
+            if not values or any(not part.isdigit() for part in values):
+                raise ConnectionError('invalid upstream Content-Length')
+            content_lengths.extend(int(part) for part in values)
+        if lower_name == b'transfer-encoding':
+            codings = [part.strip().lower() for part in value.split(b',')]
+            if not codings or any(
+                not coding or any(byte not in HTTP_TOKEN_BYTES for byte in coding)
+                for coding in codings
+            ):
+                raise ConnectionError('invalid upstream Transfer-Encoding')
+            transfer_encodings.extend(codings)
+        forwarded.append(line)
+
+    if content_lengths and len(set(content_lengths)) != 1:
+        raise ConnectionError('conflicting upstream Content-Length fields')
+    if content_lengths and transfer_encodings:
+        raise ConnectionError('ambiguous upstream response framing')
+    content_length = content_lengths[0] if content_lengths else None
+    no_body = method.upper() == 'HEAD' or status in (204, 304)
+    if no_body and body:
+        raise ConnectionError('unexpected body on bodyless upstream response')
+    if content_length is not None and len(body) > content_length:
+        raise ConnectionError('upstream response exceeded Content-Length')
+
+    # Content-Length and bodyless responses can be consumed exactly. Chunked
+    # framing remains safe but is deliberately not reused until its trailers and
+    # terminating zero chunk are parsed and validated.
+    framed_for_reuse = no_body or content_length is not None
+    keepalive = allow_keepalive and framed_for_reuse
+    forwarded.append(b'Connection: keep-alive' if keepalive else b'Connection: close')
+    destination.sendall(b'\r\n'.join(forwarded) + separator)
+
+    if no_body:
+        return keepalive
+    if content_length is not None:
+        remaining = content_length
+        if body:
+            destination.sendall(body)
+            remaining -= len(body)
+        while remaining:
+            chunk = source.recv(min(MAX_REQUEST_BYTES, remaining))
+            if not chunk:
+                raise ConnectionError('upstream response ended before Content-Length')
+            if len(chunk) > remaining:
+                raise ConnectionError('upstream response exceeded Content-Length')
+            destination.sendall(chunk)
+            remaining -= len(chunk)
+        return keepalive
+
+    if body:
+        destination.sendall(body)
+    relay(source, destination)
+    return False
+
+
 def forward_https(conn, host, port, request):
     # This is the upstream trust boundary. Payload clients never receive these
     # certificates; they receive the sandbox-CA leaf minted in handle_connect.
     context = ssl.create_default_context(cafile=str(REAL_CA))
-    with socket.create_connection((host, port), timeout=UPSTREAM_TIMEOUT_SECONDS) as raw:
-        with context.wrap_socket(raw, server_hostname=host) as upstream:
-            upstream.sendall(close_request(request))
-            relay(upstream, conn)
+    started = time.monotonic()
+    try:
+        raw = socket.create_connection(
+            (host, port), timeout=UPSTREAM_TIMEOUT_SECONDS
+        )
+    except Exception as error:
+        raise _stage_error('upstream_connect', host, port, started, error) from error
+    with raw:
+        # create_connection's timeout bounds upstream setup through the TLS
+        # handshake. Clear it only after the handshake succeeds; leaving it on
+        # the wrapped socket turns it into a transfer idle timeout and aborts
+        # valid slow registry responses. The installer keeps its separate
+        # NODE_DEPS_TIMEOUT=600 wall-clock cap.
+        started = time.monotonic()
+        try:
+            upstream = context.wrap_socket(raw, server_hostname=host)
+        except Exception as error:
+            raise _stage_error(
+                'upstream_handshake', host, port, started, error
+            ) from error
+        upstream.settimeout(None)
+        with upstream:
+            started = time.monotonic()
+            try:
+                upstream.sendall(close_request(request))
+                method = request.split(b' ', 1)[0].decode('ascii', 'replace')
+                client_closes = any(
+                    line.lower().strip() == b'connection: close'
+                    for line in request.split(b'\r\n')[1:]
+                )
+                return relay_response(
+                    upstream, conn, method, allow_keepalive=not client_closes
+                )
+            except Exception as error:
+                raise _stage_error('relay', host, port, started, error) from error
 
 
 def forward_http(conn, host, port, request, target):
@@ -167,30 +348,63 @@ def forward_http(conn, host, port, request, target):
     path = parsed.path or '/'
     if parsed.query:
         path += f'?{parsed.query}'
-    with socket.create_connection((host, port), timeout=UPSTREAM_TIMEOUT_SECONDS) as upstream:
-        upstream.sendall(close_request(request, path))
-        relay(upstream, conn)
+    started = time.monotonic()
+    try:
+        upstream = socket.create_connection(
+            (host, port), timeout=UPSTREAM_TIMEOUT_SECONDS
+        )
+    except Exception as error:
+        raise _stage_error('upstream_connect', host, port, started, error) from error
+    with upstream:
+        upstream.settimeout(None)
+        started = time.monotonic()
+        try:
+            upstream.sendall(close_request(request, path))
+            relay(upstream, conn)
+        except Exception as error:
+            raise _stage_error('relay', host, port, started, error) from error
 
 
 def handle_connect(conn, target):
     """Intercept a CONNECT tunnel, terminating TLS with a minted cert."""
     host, _, port_text = target.rpartition(':')
     port = int(port_text or '443')
-    conn.sendall(b'HTTP/1.1 200 Connection Established\r\n\r\n')
-    cert, key = cert_for(host)
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.load_cert_chain(cert, key)
-    with context.wrap_socket(conn, server_side=True) as tls:
-        nested = read_request(tls)
-        if not nested:
-            return
-        line = nested.split(b'\r\n', 1)[0].decode('iso-8859-1')
-        nested_target = line.split(' ', 2)[1]
-        found = file_for(host, nested_target)
-        if found is not None:
-            respond_fixture(tls, found)
+    started = time.monotonic()
+    try:
+        conn.sendall(b'HTTP/1.1 200 Connection Established\r\n\r\n')
+        cert, key = cert_for(host)
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(cert, key)
+        tls = context.wrap_socket(conn, server_side=True)
+    except Exception as error:
+        raise _stage_error('client_handshake', host, port, started, error) from error
+    try:
+        keepalive = True
+        while keepalive:
+            nested = read_request(tls)
+            if not nested:
+                return
+            line = nested.split(b'\r\n', 1)[0].decode('iso-8859-1')
+            nested_target = line.split(' ', 2)[1]
+            found = file_for(host, nested_target)
+            if found is not None:
+                respond_fixture(tls, found)
+                keepalive = False
+            else:
+                keepalive = forward_https(tls, host, port, nested)
+    finally:
+        # A bare SSLSocket.close() drops TCP without TLS close-notify. Undici can
+        # receive that EOF while its response parser is paused on backpressure
+        # and abort an otherwise complete tarball. Complete the TLS shutdown,
+        # bounded by the same setup timeout so an uncooperative client cannot
+        # retain a proxy thread indefinitely.
+        tls.settimeout(UPSTREAM_TIMEOUT_SECONDS)
+        try:
+            raw = tls.unwrap()
+        except (OSError, ssl.SSLError):
+            tls.close()
         else:
-            forward_https(tls, host, port, nested)
+            raw.close()
 
 
 def host_from_headers(request):
@@ -223,8 +437,13 @@ def handle_request(conn):
 def handle(conn):
     try:
         handle_request(conn)
+    except ProxyStageError as error:
+        print(f'proxy request failed: {error}', file=sys.stderr, flush=True)
     except Exception as error:
-        print(f'proxy request failed: {error!r}', file=sys.stderr, flush=True)
+        # Request bytes and arbitrary exception messages are intentionally never
+        # logged: they can contain paths, query parameters, auth, or cookies.
+        safe = ProxyStageError('client_handshake', 'unknown', 0, error, 0)
+        print(f'proxy request failed: {safe}', file=sys.stderr, flush=True)
 
 
 def serve(server):
