@@ -384,6 +384,7 @@ def test_e2e_archives_fail_closed_node_resolution_manifests() -> None:
     assert "capture_node_resolution_manifest pre-reinstall managed" in e2e
     assert "capture_node_resolution_manifest post-update managed" in e2e
     assert "capture_node_resolution_manifest post-reinstall managed" in e2e
+    assert 'local npm_logs="$SANDBOX_ROOT/home/.npm/_logs"' in e2e
     assert "node_path=" in e2e
     assert "npm_path=" in e2e
     assert "process_exec_path=" in e2e
