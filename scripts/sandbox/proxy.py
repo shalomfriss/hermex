@@ -213,29 +213,60 @@ def relay_response(source, destination, method, allow_keepalive=True):
         return False
 
     lines = headers.split(b'\r\n')
-    try:
-        status = int(lines[0].split(b' ', 2)[1])
-    except (IndexError, ValueError):
-        status = 0
-    content_length = None
-    chunked = False
+    status_parts = lines[0].split(b' ', 2)
+    if (
+        len(status_parts) < 2
+        or status_parts[0] not in (b'HTTP/1.0', b'HTTP/1.1')
+        or len(status_parts[1]) != 3
+        or not status_parts[1].isdigit()
+    ):
+        raise ConnectionError('malformed upstream HTTP status line')
+    status = int(status_parts[1])
+    # Forward an informational response and its eventual final response as one
+    # close-delimited exchange. Reusing the client connection here would require
+    # parsing another header block from the already-buffered bytes.
+    if 100 <= status < 200:
+        destination.sendall(data)
+        relay(source, destination)
+        return False
+
+    content_lengths = []
+    transfer_encodings = []
     forwarded = [lines[0]]
     for line in lines[1:]:
-        lower = line.lower()
-        if lower.startswith((b'connection:', b'keep-alive:', b'proxy-connection:')):
+        if b':' not in line:
+            raise ConnectionError('malformed upstream HTTP header')
+        name, value = line.split(b':', 1)
+        lower_name = name.lower()
+        if lower_name in (b'connection', b'keep-alive', b'proxy-connection'):
             continue
-        if lower.startswith(b'content-length:'):
-            try:
-                content_length = int(line.split(b':', 1)[1].strip())
-            except ValueError:
-                content_length = None
-        if lower.startswith(b'transfer-encoding:') and b'chunked' in lower:
-            chunked = True
+        if lower_name == b'content-length':
+            values = [part.strip() for part in value.split(b',')]
+            if not values or any(not part.isdigit() for part in values):
+                raise ConnectionError('invalid upstream Content-Length')
+            content_lengths.extend(int(part) for part in values)
+        if lower_name == b'transfer-encoding':
+            transfer_encodings.extend(
+                part.strip().lower() for part in value.split(b',') if part.strip()
+            )
         forwarded.append(line)
 
-    no_body = method.upper() == 'HEAD' or status in (204, 304) or 100 <= status < 200
-    framed = no_body or content_length is not None or chunked
-    keepalive = allow_keepalive and framed
+    if content_lengths and len(set(content_lengths)) != 1:
+        raise ConnectionError('conflicting upstream Content-Length fields')
+    if content_lengths and transfer_encodings:
+        raise ConnectionError('ambiguous upstream response framing')
+    content_length = content_lengths[0] if content_lengths else None
+    no_body = method.upper() == 'HEAD' or status in (204, 304)
+    if no_body and body:
+        raise ConnectionError('unexpected body on bodyless upstream response')
+    if content_length is not None and len(body) > content_length:
+        raise ConnectionError('upstream response exceeded Content-Length')
+
+    # Content-Length and bodyless responses can be consumed exactly. Chunked
+    # framing remains safe but is deliberately not reused until its trailers and
+    # terminating zero chunk are parsed and validated.
+    framed_for_reuse = no_body or content_length is not None
+    keepalive = allow_keepalive and framed_for_reuse
     forwarded.append(b'Connection: keep-alive' if keepalive else b'Connection: close')
     destination.sendall(b'\r\n'.join(forwarded) + separator)
 
@@ -244,13 +275,14 @@ def relay_response(source, destination, method, allow_keepalive=True):
     if content_length is not None:
         remaining = content_length
         if body:
-            sent = body[:remaining]
-            destination.sendall(sent)
-            remaining -= len(sent)
+            destination.sendall(body)
+            remaining -= len(body)
         while remaining:
             chunk = source.recv(min(MAX_REQUEST_BYTES, remaining))
             if not chunk:
                 raise ConnectionError('upstream response ended before Content-Length')
+            if len(chunk) > remaining:
+                raise ConnectionError('upstream response exceeded Content-Length')
             destination.sendall(chunk)
             remaining -= len(chunk)
         return keepalive
@@ -258,7 +290,7 @@ def relay_response(source, destination, method, allow_keepalive=True):
     if body:
         destination.sendall(body)
     relay(source, destination)
-    return keepalive
+    return False
 
 
 def forward_https(conn, host, port, request):

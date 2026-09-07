@@ -455,6 +455,52 @@ def test_response_relay_rewrites_connection_and_respects_content_length(
     assert destination.data.endswith(b"\r\n\r\nhello")
 
 
+@pytest.mark.parametrize(
+    "response",
+    [
+        b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\nx",
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 1\r\n\r\n0\r\n\r\n",
+        b"HTTP/1.1 nope\r\nContent-Length: 1\r\n\r\nx",
+    ],
+)
+def test_response_relay_rejects_ambiguous_or_malformed_framing(
+    tmp_path: Path, response: bytes
+) -> None:
+    openssl = shutil.which("openssl")
+    assert openssl
+    real_ca = tmp_path / "real-ca.pem"
+    real_key = tmp_path / "real-ca.key"
+    _mint_ca(openssl, real_ca, real_key, "Real CA")
+    proxy = _load_proxy(tmp_path / "http", tmp_path, real_ca)
+    destination = _Collector()
+
+    with pytest.raises(ConnectionError):
+        proxy.relay_response(_ChunkSource([response]), destination, "GET")
+    assert destination.data == b""
+
+
+def test_chunked_response_is_not_reused_without_validating_terminator(
+    tmp_path: Path,
+) -> None:
+    openssl = shutil.which("openssl")
+    assert openssl
+    real_ca = tmp_path / "real-ca.pem"
+    real_key = tmp_path / "real-ca.key"
+    _mint_ca(openssl, real_ca, real_key, "Real CA")
+    proxy = _load_proxy(tmp_path / "http", tmp_path, real_ca)
+    destination = _Collector()
+    response = (
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n"
+        b"Connection: keep-alive\r\n\r\n5\r\nhello\r\n0\r\n\r\n"
+    )
+
+    keep_alive = proxy.relay_response(_ChunkSource([response]), destination, "GET")
+
+    assert keep_alive is False
+    assert b"Connection: close" in destination.data
+    assert destination.data.endswith(b"5\r\nhello\r\n0\r\n\r\n")
+
+
 def test_e2e_archives_fail_closed_node_resolution_manifests() -> None:
     stage2 = STAGE2_PATH.read_text(encoding="utf-8")
     e2e = INSTALL_E2E_PATH.read_text(encoding="utf-8")
