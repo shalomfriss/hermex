@@ -203,6 +203,19 @@ install_in_sandbox() {
   local args=(install --persistent)
   [ -n "$ref" ] && args+=(--install-ref "$ref")
 
+  # Keep production installer output unchanged, but make the candidate re-run
+  # diagnosable: npm's CLI --silent overrides npm_config_loglevel and suppresses
+  # native lifecycle failures. Serve an E2E-only copy with that one flag changed.
+  if [ -z "$ref" ]; then
+    local diagnostic_installer="$LOG_DIR/$tag-installer.sh"
+    [ "$(grep -c 'npm install --silent' "$REPO_ROOT/scripts/install.sh")" -eq 1 ] \
+      || fail 'expected exactly one npm --silent command in the candidate installer'
+    sed 's/npm install --silent/npm install --loglevel verbose/' \
+      "$REPO_ROOT/scripts/install.sh" > "$diagnostic_installer"
+    chmod +x "$diagnostic_installer"
+    args+=(--installer "$diagnostic_installer")
+  fi
+
   # Installer flags have to match the installer being run, not this checkout's.
   # Older releases reject options added later ("Unknown option: --skip-browser"),
   # and this test deliberately installs releases from months back. --skip-setup
