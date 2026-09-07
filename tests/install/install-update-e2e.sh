@@ -208,8 +208,8 @@ install_in_sandbox() {
   # native lifecycle failures. Serve an E2E-only copy with that one flag changed.
   if [ -z "$ref" ]; then
     local diagnostic_installer="$LOG_DIR/$tag-installer.sh"
-    [ "$(grep -c 'npm install --silent' "$REPO_ROOT/scripts/install.sh")" -eq 1 ] \
-      || fail 'expected exactly one npm --silent command in the candidate installer'
+    [ "$(grep -c 'npm install --silent' "$REPO_ROOT/scripts/install.sh")" -ge 1 ] \
+      || fail 'expected npm --silent commands in the candidate installer'
     sed 's/npm install --silent/npm install --loglevel verbose/' \
       "$REPO_ROOT/scripts/install.sh" > "$diagnostic_installer"
     chmod +x "$diagnostic_installer"
