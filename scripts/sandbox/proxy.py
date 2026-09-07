@@ -267,21 +267,30 @@ def handle_connect(conn, target):
         tls = context.wrap_socket(conn, server_side=True)
     except Exception as error:
         raise _stage_error('client_handshake', host, port, started, error) from error
-    with tls:
-        # Keep the client-side TLS session alive until the client closes it.
-        # npm/undici may pipeline or reuse a CONNECT session, and closing it as
-        # soon as one upstream response ends can race a paused response parser.
-        while True:
-            nested = read_request(tls)
-            if not nested:
-                return
-            line = nested.split(b'\r\n', 1)[0].decode('iso-8859-1')
-            nested_target = line.split(' ', 2)[1]
-            found = file_for(host, nested_target)
-            if found is not None:
-                respond_fixture(tls, found)
-            else:
-                forward_https(tls, host, port, nested)
+    try:
+        nested = read_request(tls)
+        if not nested:
+            return
+        line = nested.split(b'\r\n', 1)[0].decode('iso-8859-1')
+        nested_target = line.split(' ', 2)[1]
+        found = file_for(host, nested_target)
+        if found is not None:
+            respond_fixture(tls, found)
+        else:
+            forward_https(tls, host, port, nested)
+    finally:
+        # A bare SSLSocket.close() drops TCP without TLS close-notify. Undici can
+        # receive that EOF while its response parser is paused on backpressure
+        # and abort an otherwise complete tarball. Complete the TLS shutdown,
+        # bounded by the same setup timeout so an uncooperative client cannot
+        # retain a proxy thread indefinitely.
+        tls.settimeout(UPSTREAM_TIMEOUT_SECONDS)
+        try:
+            raw = tls.unwrap()
+        except (OSError, ssl.SSLError):
+            tls.close()
+        else:
+            raw.close()
 
 
 def host_from_headers(request):
