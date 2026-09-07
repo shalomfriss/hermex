@@ -251,9 +251,13 @@ def relay_response(source, destination, method, allow_keepalive=True):
                 raise ConnectionError('invalid upstream Content-Length')
             content_lengths.extend(int(part) for part in values)
         if lower_name == b'transfer-encoding':
-            transfer_encodings.extend(
-                part.strip().lower() for part in value.split(b',') if part.strip()
-            )
+            codings = [part.strip().lower() for part in value.split(b',')]
+            if not codings or any(
+                not coding or any(byte not in HTTP_TOKEN_BYTES for byte in coding)
+                for coding in codings
+            ):
+                raise ConnectionError('invalid upstream Transfer-Encoding')
+            transfer_encodings.extend(codings)
         forwarded.append(line)
 
     if content_lengths and len(set(content_lengths)) != 1:
