@@ -370,6 +370,47 @@ def test_upstream_tls_handshake_keeps_connect_timeout(tmp_path: Path) -> None:
     assert errors[0].error_name == "TimeoutError"
 
 
+def test_connect_tunnel_stays_open_for_sequential_requests(tmp_path: Path) -> None:
+    openssl = shutil.which("openssl")
+    assert openssl
+    certs = tmp_path / "certs"
+    certs.mkdir()
+    _mint_ca(openssl, certs / "ca.pem", certs / "ca.key", "Sandbox MITM CA")
+    _mint_ca(openssl, certs / "real-ca.pem", certs / "real-ca.key", "Upstream CA")
+    proxy = _load_proxy(tmp_path / "http", certs, certs / "real-ca.pem")
+    seen = []
+
+    def fake_forward(conn, host, port, request) -> None:
+        seen.append(request.split(b" ", 2)[1])
+        conn.sendall(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\n"
+            b"Connection: keep-alive\r\n\r\nx"
+        )
+
+    proxy.forward_https = fake_forward
+    server, client = socket.socketpair()
+    worker = threading.Thread(
+        target=proxy.handle_connect,
+        args=(server, "registry.npmjs.org:443"),
+        daemon=True,
+    )
+    worker.start()
+    assert client.recv(4096) == b"HTTP/1.1 200 Connection Established\r\n\r\n"
+
+    context = ssl.create_default_context(cafile=str(certs / "ca.pem"))
+    with context.wrap_socket(client, server_hostname="registry.npmjs.org") as tls:
+        for path in (b"/first", b"/second"):
+            tls.sendall(b"GET " + path + b" HTTP/1.1\r\nHost: registry.npmjs.org\r\n\r\n")
+            response = bytearray()
+            while b"\r\n\r\nx" not in response:
+                chunk = tls.recv(4096)
+                assert chunk, "CONNECT tunnel closed before the complete response"
+                response.extend(chunk)
+
+    worker.join(timeout=2)
+    assert seen == [b"/first", b"/second"]
+
+
 def test_e2e_archives_fail_closed_node_resolution_manifests() -> None:
     stage2 = STAGE2_PATH.read_text(encoding="utf-8")
     e2e = INSTALL_E2E_PATH.read_text(encoding="utf-8")

@@ -268,16 +268,20 @@ def handle_connect(conn, target):
     except Exception as error:
         raise _stage_error('client_handshake', host, port, started, error) from error
     with tls:
-        nested = read_request(tls)
-        if not nested:
-            return
-        line = nested.split(b'\r\n', 1)[0].decode('iso-8859-1')
-        nested_target = line.split(' ', 2)[1]
-        found = file_for(host, nested_target)
-        if found is not None:
-            respond_fixture(tls, found)
-        else:
-            forward_https(tls, host, port, nested)
+        # Keep the client-side TLS session alive until the client closes it.
+        # npm/undici may pipeline or reuse a CONNECT session, and closing it as
+        # soon as one upstream response ends can race a paused response parser.
+        while True:
+            nested = read_request(tls)
+            if not nested:
+                return
+            line = nested.split(b'\r\n', 1)[0].decode('iso-8859-1')
+            nested_target = line.split(' ', 2)[1]
+            found = file_for(host, nested_target)
+            if found is not None:
+                respond_fixture(tls, found)
+            else:
+                forward_https(tls, host, port, nested)
 
 
 def host_from_headers(request):
