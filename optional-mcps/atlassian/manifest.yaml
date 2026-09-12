@@ -8,15 +8,30 @@ description: >-
 source: https://support.atlassian.com/rovo/docs/getting-started-with-the-atlassian-remote-mcp-server/
 
 # Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
-# process for this entry). Native OAuth 2.1 + Dynamic Client Registration;
-# Hermes's MCP client + mcp_oauth_manager handle discovery, PKCE, token
-# exchange, and refresh.
+# process for this entry). The /authv2 endpoint publishes the OAuth metadata
+# Hermes's MCP client needs for discovery, PKCE, token exchange, and refresh.
 transport:
   type: http
-  url: https://mcp.atlassian.com/v1/sse
+  url: https://mcp.atlassian.com/v1/mcp/authv2
 
 auth:
   type: oauth
+
+# Atlassian exposes mutations alongside reads. Keep the server untrusted so
+# tools without readOnlyHint=true require one-call approval before any RPC.
+trust: untrusted
+
+# Keep the default agent surface to the Jira operations needed for a coding
+# workflow, including the cloudId discovery prerequisite required by every
+# Jira call. Users can inspect and change this selection after authentication.
+tools:
+  default_enabled:
+    - getAccessibleAtlassianResources
+    - getJiraIssue
+    - searchJiraIssuesUsingJql
+    - getTransitionsForJiraIssue
+    - addCommentToJiraIssue
+    - transitionJiraIssue
 
 # Composer-suggestion triggers (desktop brand pills).
 suggest:
@@ -31,6 +46,8 @@ suggest:
     - jira.com
 
 post_install: |
-  On first connection Hermes opens a browser to authorize with
-  Atlassian (or run `hermes mcp login atlassian`). Approve access,
-  then restart the session so tools load.
+  Run `hermes mcp login atlassian`, then approve the intended Atlassian
+  site and Jira access. Keep `trust: untrusted` so write-capable tools require
+  one-call approval. After authentication, run
+  `hermes mcp configure atlassian` if the server's tool names changed,
+  then start a fresh session or reload MCP tools.
