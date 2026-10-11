@@ -309,9 +309,11 @@ Then run `hermes mcp login googledrive` — with the pre-registered client, Herm
 
 ### Atlassian Jira coding workflow
 
-The catalog entry uses Atlassian's official OAuth endpoint,
-`https://mcp.atlassian.com/v1/mcp/authv2`. The legacy `/v1/sse` endpoint is
-unsupported after June 30, 2026. Connect an interactive coding agent with:
+The catalog entry uses Atlassian's current official MCP v2 endpoint,
+`https://mcp.atlassian.com/v2/mcp`. Atlassian's setup guide recommends that
+endpoint for new clients, and their v1→v2 migration guide says v2 is a separate
+OAuth resource: existing v1 credentials do not carry over, so upgraded clients
+must reauthenticate. Connect an interactive coding agent with:
 
 ```bash
 hermes mcp install atlassian
@@ -320,26 +322,45 @@ hermes mcp configure atlassian
 hermes mcp test atlassian
 ```
 
-During login, approve the intended Atlassian account and site and only the Jira
-access your work requires. The catalog defaults to six coding-workflow tools:
-`getAccessibleAtlassianResources`, `getJiraIssue`,
-`searchJiraIssuesUsingJql`, `getTransitionsForJiraIssue`,
-`addCommentToJiraIssue`, and `transitionJiraIssue`. The first tool discovers the
-site `cloudId` required by every later Jira call. The configure step lets you
-inspect or adjust that surface after authentication. Start a fresh Hermes
-session or use the existing MCP reload flow so the authenticated tools are
-rediscovered.
+During login, approve the intended Atlassian account and site and only the
+access your work requires. If you previously installed Atlassian MCP with the
+old v1 endpoint, run `hermes mcp login atlassian` again after the catalog entry
+updates to v2; if authentication still reuses stale metadata, log out/remove the
+server and reinstall so the MCP SDK can discover fresh v2 OAuth metadata.
+
+Atlassian MCP v2 does not expose every product action as a flat tool list by
+default. Its supported-tools page documents a small primary surface plus a
+deferred catalog: call `discover` to find relevant deferred tools, then run them
+through `executeRead`, `executeWrite`, or `executeDestructive` depending on the
+operation's risk. Atlassian documents `https://mcp.atlassian.com/v2/mcp?tools=all`
+for MCP gateways or clients that require a paginated flat `tools/list` response;
+Hermes's catalog uses the normal v2 endpoint instead, so the default surface
+stays compact and can use the discover/execute flow.
+
+The catalog defaults to v2 primary coding-workflow tools:
+`atlassianUserInfo`, `getAccessibleAtlassianResources`, `discover`,
+`executeRead`, `executeWrite`, `getJiraIssue`, `searchJiraIssuesUsingJql`,
+`listJiraIssueTransitions`, `addOrEditJiraIssueComment`, and
+`transitionJiraIssue`. `getAccessibleAtlassianResources` discovers the site
+`cloudId` required by later Jira calls. `executeDestructive` is intentionally
+not enabled by default; use `hermes mcp configure atlassian` if you explicitly
+need destructive deferred tools. Start a fresh Hermes session or use the
+existing MCP reload flow so the authenticated tools are rediscovered.
 
 Begin by calling `getAccessibleAtlassianResources` and selecting the intended
 site's `cloudId`, then perform a read-only check against a known issue key. A
 safe coding workflow is to read the issue and acceptance criteria, implement
 and test the change, post a concise comment containing the canonical
 pull-request URL only when requested, then discover valid workflow transitions
-and transition the issue only when explicitly authorized. The installed
-`trust: untrusted` tier requires one-call approval before write-capable tools
-reach Atlassian. Denying approval blocks the RPC. Transition IDs and status
-names vary by Jira workflow, so never assume a global mapping. Read the issue
-again after a comment or transition before reporting that the write succeeded.
+and transition the issue only when explicitly authorized. For v2 actions that
+are not directly exposed as primary tools, search with `discover` first and run
+the returned operation through `executeRead` or `executeWrite`; do not use
+`executeDestructive` unless a human explicitly authorized a destructive action
+and enabled it in the tool selection. The installed `trust: untrusted` tier
+requires one-call approval before write-capable tools reach Atlassian. Denying
+approval blocks the RPC. Transition IDs and status names vary by Jira workflow,
+so never assume a global mapping. Read the issue again after a comment or
+transition before reporting that the write succeeded.
 
 If setup or a call fails:
 
@@ -360,6 +381,11 @@ If setup or a call fails:
   selected and the signed-in user can access the project and issue. Malformed or
   oversized responses remain subject to Hermes's MCP validation and result-size
   limits; there is no Jira-specific parser that bypasses those safeguards.
+
+Official Atlassian references used for this catalog entry: [Get started with
+the Atlassian MCP server](https://support.atlassian.com/atlassian-ai-gateway/docs/get-started-with-the-atlassian-remote-mcp-server),
+[How to upgrade from Atlassian MCP v1 to Atlassian MCP v2](https://support.atlassian.com/atlassian-ai-gateway/docs/how-to-upgrade-from-atlassian-mcp-v1-to-atlassian-mcp-v2),
+and [Supported tools](https://support.atlassian.com/atlassian-ai-gateway/docs/supported-tools).
 
 Interactive user OAuth is the supported quick-start path. A headless gateway or
 service-account/API-token deployment requires separate administrator approval,

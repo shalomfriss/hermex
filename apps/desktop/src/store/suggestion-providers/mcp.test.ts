@@ -11,9 +11,9 @@ const INDEX = [
 ]
 
 describe('matchSuggestions', () => {
-  it('uses Atlassian’s supported Jira OAuth endpoint in the old-backend fallback', () => {
+  it('uses Atlassian’s recommended v2 endpoint in the old-backend fallback', () => {
     expect(MCP_DIRECTORY.find(entry => entry.name === 'atlassian')?.url).toBe(
-      'https://mcp.atlassian.com/v1/mcp/authv2'
+      'https://mcp.atlassian.com/v2/mcp'
     )
   })
 

@@ -630,17 +630,21 @@ class TestShippedCatalog:
         entry = _entry("atlassian")
 
         assert entry.transport.type == "http"
-        assert entry.transport.url == "https://mcp.atlassian.com/v1/mcp/authv2"
+        assert entry.transport.url == "https://mcp.atlassian.com/v2/mcp"
         assert entry.auth.type == "oauth"
         assert entry.suggest is not None
         assert "atlassian.net" in entry.suggest.hosts
         assert entry.trust == "untrusted"
         assert entry.tools.default_enabled == [
+            "atlassianUserInfo",
             "getAccessibleAtlassianResources",
+            "discover",
+            "executeRead",
+            "executeWrite",
             "getJiraIssue",
             "searchJiraIssuesUsingJql",
-            "getTransitionsForJiraIssue",
-            "addCommentToJiraIssue",
+            "listJiraIssueTransitions",
+            "addOrEditJiraIssueComment",
             "transitionJiraIssue",
         ]
 
@@ -657,11 +661,15 @@ class TestShippedCatalog:
         server = load_config()["mcp_servers"]["atlassian"]
         assert server["trust"] == "untrusted"
         assert server["tools"]["include"] == [
+            "atlassianUserInfo",
             "getAccessibleAtlassianResources",
+            "discover",
+            "executeRead",
+            "executeWrite",
             "getJiraIssue",
             "searchJiraIssuesUsingJql",
-            "getTransitionsForJiraIssue",
-            "addCommentToJiraIssue",
+            "listJiraIssueTransitions",
+            "addOrEditJiraIssueComment",
             "transitionJiraIssue",
         ]
 

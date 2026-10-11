@@ -5,14 +5,15 @@ manifest_version: 1
 name: atlassian
 description: >-
   Jira issues and Confluence pages via Atlassian's hosted remote MCP.
-source: https://support.atlassian.com/rovo/docs/getting-started-with-the-atlassian-remote-mcp-server/
+source: https://support.atlassian.com/atlassian-ai-gateway/docs/get-started-with-the-atlassian-remote-mcp-server
 
 # Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
-# process for this entry). The /authv2 endpoint publishes the OAuth metadata
-# Hermes's MCP client needs for discovery, PKCE, token exchange, and refresh.
+# process for this entry). Atlassian's v2 endpoint is the recommended endpoint
+# for new installs; Hermes's MCP client handles OAuth metadata discovery, PKCE,
+# token exchange, and refresh from the remote server.
 transport:
   type: http
-  url: https://mcp.atlassian.com/v1/mcp/authv2
+  url: https://mcp.atlassian.com/v2/mcp
 
 auth:
   type: oauth
@@ -21,16 +22,21 @@ auth:
 # tools without readOnlyHint=true require one-call approval before any RPC.
 trust: untrusted
 
-# Keep the default agent surface to the Jira operations needed for a coding
-# workflow, including the cloudId discovery prerequisite required by every
-# Jira call. Users can inspect and change this selection after authentication.
+# Keep the default agent surface to the v2 primary Jira/coding operations and
+# the discover/execute path for deferred v2 tools. Do not use ?tools=all here:
+# Atlassian documents that override for MCP gateways that need a paginated flat
+# tools/list, while normal clients should use discover + execute tools.
 tools:
   default_enabled:
+    - atlassianUserInfo
     - getAccessibleAtlassianResources
+    - discover
+    - executeRead
+    - executeWrite
     - getJiraIssue
     - searchJiraIssuesUsingJql
-    - getTransitionsForJiraIssue
-    - addCommentToJiraIssue
+    - listJiraIssueTransitions
+    - addOrEditJiraIssueComment
     - transitionJiraIssue
 
 # Composer-suggestion triggers (desktop brand pills).
@@ -48,6 +54,8 @@ suggest:
 post_install: |
   Run `hermes mcp login atlassian`, then approve the intended Atlassian
   site and Jira access. Keep `trust: untrusted` so write-capable tools require
-  one-call approval. After authentication, run
-  `hermes mcp configure atlassian` if the server's tool names changed,
-  then start a fresh session or reload MCP tools.
+  one-call approval. If you previously used the v1 Atlassian endpoint, v2 is a
+  separate OAuth resource: re-run `hermes mcp login atlassian` after upgrading
+  so fresh v2 credentials are cached. After authentication, run
+  `hermes mcp configure atlassian` to review Atlassian's v2 primary tools and
+  discover/execute surface, then start a fresh session or reload MCP tools.

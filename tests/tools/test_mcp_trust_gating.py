@@ -128,12 +128,12 @@ class TestTrustGateAtCallTime:
         assert entry is not None
         config = _build_server_config(entry, None)
         tool = SimpleNamespace(
-            name="addCommentToJiraIssue",
+            name="addOrEditJiraIssueComment",
             annotations=SimpleNamespace(readOnlyHint=False),
         )
         mcp_tool._record_tool_trust_metadata("srv", config, [tool])
         handler = mcp_tool._make_tool_handler(
-            "srv", "addCommentToJiraIssue", 30.0
+            "srv", "addOrEditJiraIssueComment", 30.0
         )
 
         with patch(
