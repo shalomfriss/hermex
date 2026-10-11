@@ -107,26 +107,33 @@ mapfile -t filtered_tags < <(
   for tag in "${all_tags[@]}"; do
     if printf '%s\n' "$remote_refs" | grep -Fxq "refs/tags/$tag"; then
       if [ "$REQUIRE_UPDATE_COMPAT" -eq 1 ]; then
+        # This route must move forward from an earlier release to the candidate.
+        # Installer legs may still cover any live release, but invoking an old
+        # updater to move backward across incompatible CLI generations is not an
+        # update contract and caused both the missing-helper and post-swap
+        # failures this filter exists to prevent.
+        git -C "$REPO" merge-base --is-ancestor "$tag^{commit}" HEAD \
+          || continue
+
         # Capture before grepping: `git show | grep -q` under pipefail falsely
         # rejects large files when grep exits early and git receives SIGPIPE.
         main_source="$(git -C "$REPO" show "$tag:hermes_cli/main.py" 2>/dev/null)" \
           || continue
-        dashboard_source="$(git -C "$REPO" show "$tag:hermes_cli/dashboard_procs.py" 2>/dev/null)" \
-          || continue
-        update_source="$(git -C "$REPO" show "$tag:hermes_cli/update_cmd.py" 2>/dev/null)" \
-          || continue
+        dashboard_source="$(git -C "$REPO" show "$tag:hermes_cli/dashboard_procs.py" 2>/dev/null || true)"
+        update_source="$(git -C "$REPO" show "$tag:hermes_cli/update_cmd.py" 2>/dev/null || true)"
         main_dashboard_source="$(git -C "$REPO" show "$tag:hermes_cli/main_dashboard.py" 2>/dev/null || true)"
 
-        # The helper moved from main.py to main_dashboard.py. A release is only
-        # compatible when dashboard_procs resolves the module that actually
-        # defines it; this rejects the historical missing-helper failure.
+        # Legacy releases did not restart dashboards and are valid updater
+        # coverage. Once a release references the helper, however, its binding
+        # must match the module that defines it; this rejects the historical
+        # missing-helper failure across the main.py → main_dashboard.py move.
         if grep -Fq '_m()._restart_managed_dashboard_service' <<< "$dashboard_source"; then
           grep -Fq 'def _restart_managed_dashboard_service' <<< "$main_source" \
             || continue
         elif grep -Fq '_dash._restart_managed_dashboard_service' <<< "$dashboard_source"; then
           grep -Fq 'def _restart_managed_dashboard_service' <<< "$main_dashboard_source" \
             || continue
-        else
+        elif git -C "$REPO" grep -Fq '_restart_managed_dashboard_service' "$tag" -- hermes_cli 2>/dev/null; then
           continue
         fi
 

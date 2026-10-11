@@ -55,9 +55,12 @@ git -C "$WORK" push -q "$REMOTE" HEAD:refs/heads/main
 for patch in 1 2 3 4 5 6 7 8; do
   git -C "$WORK" push -q "$REMOTE" "refs/tags/v2026.1.$patch"
 done
+future_commit="$(printf 'future release\n' | git -C "$WORK" commit-tree 'HEAD^{tree}')"
+git -C "$WORK" tag v2027.1.1 "$future_commit"
+git -C "$WORK" push -q "$REMOTE" refs/tags/v2027.1.1
 
 installer_tags="$($SCRIPT --repo "$WORK" --remote "$REMOTE" --count 5 --require-count)"
-[ "$installer_tags" = '["v2026.1.1","v2026.1.3","v2026.1.5","v2026.1.6","v2026.1.8"]' ] || {
+[ "$installer_tags" = '["v2026.1.1","v2026.1.3","v2026.1.5","v2026.1.7","v2027.1.1"]' ] || {
   echo "unexpected installer tags: $installer_tags" >&2
   exit 1
 }
