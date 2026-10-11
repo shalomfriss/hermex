@@ -168,27 +168,9 @@ rm -rf -- "$SANDBOX_ROOT"
 # and argparse prints every option it accepts.
 update_supports() {
   local flag="$1"
-  in_sandbox "hermes update --help 2>&1" | grep -qF -- "$flag"
-}
-
-# Does the installer at REF accept FLAG? Read it out of that ref's own
-# install.sh rather than assuming this checkout's flag set: the point of the
-# matrix is to install releases from months back, whose installers predate
-# options we take for granted. (Unlike the updater, the installer runs before
-# anything is installed, so there is no --help to ask yet.)
-#
-# The ref may not be local -- the sandbox does its own fetching -- so fall back
-# to fetching just that blob. Unresolvable means "flag absent", which costs a
-# more conservative invocation, never a wrong one.
-installer_supports() {
-  local ref="$1"
-  local flag="$2"
-  local script=""
-  script="$(git show "$ref:scripts/install.sh" 2>/dev/null)" || {
-    git fetch -q --depth 1 "$UPSTREAM_URL" "$ref" 2>/dev/null || return 1
-    script="$(git show FETCH_HEAD:scripts/install.sh 2>/dev/null)" || return 1
-  }
-  printf '%s' "$script" | grep -qF -- "$flag"
+  local help
+  help="$(in_sandbox "hermes update --help 2>&1")" || return 1
+  grep -qF -- "$flag" <<< "$help"
 }
 
 # Run the real install one-liner inside the sandbox. `ref` non-empty installs
@@ -221,12 +203,10 @@ install_in_sandbox() {
   # and this test deliberately installs releases from months back. Probe each
   # optional flag against that release before passing it to the install script.
   local installer_flags=()
-  if installer_supports "$ref" --skip-setup; then
-    installer_flags+=(--skip-setup)
-  fi
-  if installer_supports "$ref" --skip-browser; then
-    installer_flags+=(--skip-browser)
-  fi
+  mapfile -t installer_flags < <(
+    "$REPO_ROOT/scripts/sandbox/installer-supported-flags.sh" \
+      --repo "$REPO_ROOT" --upstream "$UPSTREAM_URL" --ref "$ref"
+  )
   # Sandbox flags must precede `--`; the rest goes to install.sh.
   args+=(-- "${installer_flags[@]}")
 

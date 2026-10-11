@@ -14,10 +14,17 @@
 #
 # Usage:
 #   scripts/sandbox/pick-release-tags.sh [--count N] [--repo DIR]
+#                                        [--remote NAME_OR_URL]
+#                                        [--require-count]
 #
 #   --count   how many tags to emit (default 5, minimum 1). Fewer tags than
 #             requested emits all of them.
 #   --repo    repository to read tags from (default: this checkout).
+#   --remote  authoritative remote whose live tag refs are eligible (default:
+#             origin). A URL is accepted when the checkout's origin is a fork.
+#   --require-count  fail instead of emitting fewer tags than requested.
+#   --require-update-compat  keep only tags whose updater exposes the dashboard
+#             restart helper required by the update-route E2E.
 #
 # Reads tags from the local checkout, so it needs one fetched with tags
 # (actions/checkout with fetch-depth: 0, or `fetch-tags: true`). A shallow
@@ -34,6 +41,8 @@ COUNT=5
 # path so a symlinked or copied script still reads the checkout it lives in
 # rather than whatever repo the caller happens to be standing in.
 REPO=""
+REMOTE=origin
+REQUIRE_COUNT=0
 # When true, require tags whose CLI update path exposes the dashboard restart
 # helper referenced by our installed-update E2E. Older tags that predate this
 # compatibility shim should be excluded from update-route coverage.
@@ -46,6 +55,11 @@ while [ "$#" -gt 0 ]; do
     --repo)
       [ "$#" -ge 2 ] || { echo 'error: --repo needs a value' >&2; exit 1; }
       REPO="$2"; shift 2 ;;
+    --remote)
+      [ "$#" -ge 2 ] || { echo 'error: --remote needs a value' >&2; exit 1; }
+      REMOTE="$2"; shift 2 ;;
+    --require-count)
+      REQUIRE_COUNT=1; shift ;;
     --require-update-compat)
       REQUIRE_UPDATE_COMPAT=1; shift ;;
     -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
@@ -78,14 +92,24 @@ mapfile -t all_tags < <(
     | sort -V
 )
 
+remote_refs="$(git -C "$REPO" ls-remote --refs "$REMOTE" 'refs/tags/v*' | cut -f2)" || {
+  echo "error: could not list release tags from remote $REMOTE" >&2
+  exit 1
+}
+
 # Exclude tags that no longer resolve from the current remote (stale local tags
 # that remain after deletions) and, for update-route selection, tags whose checked
 # out main.py does not yet provide the restart helper used by hermes update.
 mapfile -t filtered_tags < <(
   for tag in "${all_tags[@]}"; do
-    if git -C "$REPO" ls-remote --exit-code --refs origin "refs/tags/$tag" >/dev/null 2>&1; then
+    if printf '%s\n' "$remote_refs" | grep -Fxq "refs/tags/$tag"; then
       if [ "$REQUIRE_UPDATE_COMPAT" -eq 1 ]; then
-        if ! git -C "$REPO" show "$tag:hermes_cli/main.py" | grep -q '_restart_managed_dashboard_service'; then
+        # Do not use `git show | grep -q` under pipefail: on a large main.py,
+        # grep exits after the early match, git receives SIGPIPE, and the tag is
+        # falsely rejected. Capture first so both commands report independently.
+        compat_source="$(git -C "$REPO" show "$tag:hermes_cli/main.py" 2>/dev/null)" \
+          || continue
+        if ! grep -Fq '_restart_managed_dashboard_service' <<< "$compat_source"; then
           continue
         fi
       fi
@@ -98,26 +122,13 @@ tags=("${filtered_tags[@]}")
 
 total="${#tags[@]}"
 if [ "$total" -eq 0 ]; then
-  if [ "$REQUIRE_UPDATE_COMPAT" -eq 1 ]; then
-    echo "warn: no tags passed update compatibility filter in $REPO; falling back to remote-resolved tags" >&2
-    mapfile -t tags < <(
-      for tag in "${all_tags[@]}"; do
-        git -C "$REPO" ls-remote --exit-code --refs origin "refs/tags/$tag" >/dev/null 2>&1 && printf '%s\n' "$tag" || true
-      done
-    )
-    total="${#tags[@]}"
-    [ "$total" -ne 0 ] || {
-      echo "error: no release tags found in $REPO" >&2
-      echo '       A shallow clone has no tags: fetch with tags (actions/checkout' >&2
-      echo '       with fetch-depth: 0, or fetch-tags: true).' >&2
-      exit 1
-    }
-  else
-    echo "error: no release tags found in $REPO" >&2
-    echo '       A shallow clone has no tags: fetch with tags (actions/checkout' >&2
-    echo '       with fetch-depth: 0, or fetch-tags: true).' >&2
-    exit 1
-  fi
+  echo "error: no eligible release tags found in $REPO" >&2
+  echo '       Fetch tags into the checkout and verify the authoritative remote.' >&2
+  exit 1
+fi
+if [ "$REQUIRE_COUNT" -eq 1 ] && [ "$total" -lt "$COUNT" ]; then
+  echo "error: only $total eligible release tags remain; requested $COUNT" >&2
+  exit 1
 fi
 
 if [ "$total" -le "$COUNT" ]; then

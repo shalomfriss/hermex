@@ -88,13 +88,20 @@ jobs:
       - id: pick
         run: |
           set -euo pipefail
-          tags="$(scripts/sandbox/pick-release-tags.sh --count '${{ inputs.tag-count || 5 }}')"
+          tags="$(scripts/sandbox/pick-release-tags.sh \
+            --count '${{ inputs.tag-count || 5 }}' \
+            --remote https://github.com/NousResearch/hermes-agent.git \
+            --require-count)"
           echo "Testing updates from: $tags"
           echo "tags=$tags" >> "$GITHUB_OUTPUT"
       - id: pick_update
         run: |
           set -euo pipefail
-          tags="$(scripts/sandbox/pick-release-tags.sh --count '${{ inputs.tag-count || 5 }}' --require-update-compat)"
+          tags="$(scripts/sandbox/pick-release-tags.sh \
+            --count '${{ inputs.tag-count || 5 }}' \
+            --remote https://github.com/NousResearch/hermes-agent.git \
+            --require-count \
+            --require-update-compat)"
           echo "Testing update-compatible refs from: $tags"
           echo "tags=$tags" >> "$GITHUB_OUTPUT"
 
