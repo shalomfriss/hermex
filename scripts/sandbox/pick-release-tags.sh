@@ -43,9 +43,8 @@ COUNT=5
 REPO=""
 REMOTE=origin
 REQUIRE_COUNT=0
-# When true, require tags whose CLI update path exposes the dashboard restart
-# helper referenced by our installed-update E2E. Older tags that predate this
-# compatibility shim should be excluded from update-route coverage.
+# When true, require tags whose CLI update path binds its dashboard restart
+# helper correctly and avoids the known mixed-module reload hazard.
 REQUIRE_UPDATE_COMPAT=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -98,18 +97,40 @@ remote_refs="$(git -C "$REPO" ls-remote --refs "$REMOTE" 'refs/tags/v*' | cut -f
 }
 
 # Exclude tags that no longer resolve from the current remote (stale local tags
-# that remain after deletions) and, for update-route selection, tags whose checked
-# out main.py does not yet provide the restart helper used by hermes update.
+# that remain after deletions). For update-route selection, also reject releases
+# whose updater is known to break while crossing into today's modular CLI.
 mapfile -t filtered_tags < <(
   for tag in "${all_tags[@]}"; do
     if printf '%s\n' "$remote_refs" | grep -Fxq "refs/tags/$tag"; then
       if [ "$REQUIRE_UPDATE_COMPAT" -eq 1 ]; then
-        # Do not use `git show | grep -q` under pipefail: on a large main.py,
-        # grep exits after the early match, git receives SIGPIPE, and the tag is
-        # falsely rejected. Capture first so both commands report independently.
-        compat_source="$(git -C "$REPO" show "$tag:hermes_cli/main.py" 2>/dev/null)" \
+        # Capture before grepping: `git show | grep -q` under pipefail falsely
+        # rejects large files when grep exits early and git receives SIGPIPE.
+        main_source="$(git -C "$REPO" show "$tag:hermes_cli/main.py" 2>/dev/null)" \
           || continue
-        if ! grep -Fq '_restart_managed_dashboard_service' <<< "$compat_source"; then
+        dashboard_source="$(git -C "$REPO" show "$tag:hermes_cli/dashboard_procs.py" 2>/dev/null)" \
+          || continue
+        update_source="$(git -C "$REPO" show "$tag:hermes_cli/update_cmd.py" 2>/dev/null)" \
+          || continue
+        main_dashboard_source="$(git -C "$REPO" show "$tag:hermes_cli/main_dashboard.py" 2>/dev/null || true)"
+
+        # The helper moved from main.py to main_dashboard.py. A release is only
+        # compatible when dashboard_procs resolves the module that actually
+        # defines it; this rejects the historical missing-helper failure.
+        if grep -Fq '_m()._restart_managed_dashboard_service' <<< "$dashboard_source"; then
+          grep -Fq 'def _restart_managed_dashboard_service' <<< "$main_source" \
+            || continue
+        elif grep -Fq '_dash._restart_managed_dashboard_service' <<< "$dashboard_source"; then
+          grep -Fq 'def _restart_managed_dashboard_service' <<< "$main_dashboard_source" \
+            || continue
+        else
+          continue
+        fi
+
+        # Releases that reloaded only the process-scan modules could import new
+        # source against stale siblings (for example cli_output without the new
+        # line_input symbol). Later releases purge stale Hermes modules first.
+        if grep -Fq '_reload_process_scan_modules' <<< "$update_source" \
+            && ! grep -Fq '_purge_stale_hermes_modules' <<< "$update_source"; then
           continue
         fi
       fi
