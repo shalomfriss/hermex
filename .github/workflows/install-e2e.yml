@@ -54,20 +54,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Which released versions do we test updating FROM? Resolved once and shared
-  # by both route matrices, so the two routes cover the same set.
+  # Which released versions do we test updating FROM? Resolved once and shared,
+  # with a compatibility-filtered subset for updater legs and raw remote-
+  # validated tags for installer legs.
   pick-releases:
     name: Pick release tags
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       tags: ${{ steps.pick.outputs.tags }}
+      update_tags: ${{ steps.pick_update.outputs.tags }}
     steps:
       # Keep the script tied to this exact commit, but do not persist the
       # repository token: release tags come from the public upstream below.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           filter: blob:none
+          fetch-depth: 0
           persist-credentials: false
           sparse-checkout: scripts/sandbox/pick-release-tags.sh
           sparse-checkout-cone-mode: false
@@ -86,8 +89,21 @@ jobs:
       - id: pick
         run: |
           set -euo pipefail
-          tags="$(scripts/sandbox/pick-release-tags.sh --count '${{ inputs.tag-count || 5 }}')"
+          tags="$(scripts/sandbox/pick-release-tags.sh \
+            --count '${{ inputs.tag-count || 5 }}' \
+            --remote https://github.com/NousResearch/hermes-agent.git \
+            --require-count)"
           echo "Testing updates from: $tags"
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+      - id: pick_update
+        run: |
+          set -euo pipefail
+          tags="$(scripts/sandbox/pick-release-tags.sh \
+            --count '${{ inputs.tag-count || 5 }}' \
+            --remote https://github.com/NousResearch/hermes-agent.git \
+            --require-count \
+            --require-update-compat)"
+          echo "Testing update-compatible refs from: $tags"
           echo "tags=$tags" >> "$GITHUB_OUTPUT"
 
   # `hermes update` -- the route most users take.
@@ -99,7 +115,7 @@ jobs:
       # failed, so let every leg report.
       fail-fast: false
       matrix:
-        install-ref: ${{ fromJSON(needs.pick-releases.outputs.tags) }}
+        install-ref: ${{ fromJSON(needs.pick-releases.outputs.update_tags) }}
     uses: ./.github/workflows/install-e2e-run.yml
     with:
       route: update

@@ -14,10 +14,17 @@
 #
 # Usage:
 #   scripts/sandbox/pick-release-tags.sh [--count N] [--repo DIR]
+#                                        [--remote NAME_OR_URL]
+#                                        [--require-count]
 #
 #   --count   how many tags to emit (default 5, minimum 1). Fewer tags than
 #             requested emits all of them.
 #   --repo    repository to read tags from (default: this checkout).
+#   --remote  authoritative remote whose live tag refs are eligible (default:
+#             origin). A URL is accepted when the checkout's origin is a fork.
+#   --require-count  fail instead of emitting fewer tags than requested.
+#   --require-update-compat  keep only tags whose updater exposes the dashboard
+#             restart helper required by the update-route E2E.
 #
 # Reads tags from the local checkout, so it needs one fetched with tags
 # (actions/checkout with fetch-depth: 0, or `fetch-tags: true`). A shallow
@@ -34,6 +41,11 @@ COUNT=5
 # path so a symlinked or copied script still reads the checkout it lives in
 # rather than whatever repo the caller happens to be standing in.
 REPO=""
+REMOTE=origin
+REQUIRE_COUNT=0
+# When true, require tags whose CLI update path binds its dashboard restart
+# helper correctly and avoids the known mixed-module reload hazard.
+REQUIRE_UPDATE_COMPAT=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --count)
@@ -42,6 +54,13 @@ while [ "$#" -gt 0 ]; do
     --repo)
       [ "$#" -ge 2 ] || { echo 'error: --repo needs a value' >&2; exit 1; }
       REPO="$2"; shift 2 ;;
+    --remote)
+      [ "$#" -ge 2 ] || { echo 'error: --remote needs a value' >&2; exit 1; }
+      REMOTE="$2"; shift 2 ;;
+    --require-count)
+      REQUIRE_COUNT=1; shift ;;
+    --require-update-compat)
+      REQUIRE_UPDATE_COMPAT=1; shift ;;
     -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "error: unknown argument: $1" >&2; exit 1 ;;
   esac
@@ -66,17 +85,89 @@ fi
 
 # sort -V orders v2026.4.8 before v2026.4.13 (numeric), which a plain
 # lexicographic sort gets wrong.
-mapfile -t tags < <(
+mapfile -t all_tags < <(
   git -C "$REPO" tag --list 'v*' \
     | grep -E '^v[0-9]{4}\.[0-9]+\.[0-9]+(\.[0-9]+)?$' \
     | sort -V
 )
 
+remote_refs="$(git -C "$REPO" ls-remote --refs "$REMOTE" 'refs/tags/v*' | cut -f2)" || {
+  echo "error: could not list release tags from remote $REMOTE" >&2
+  exit 1
+}
+target_supports_post_swap=0
+if git -C "$REPO" grep -Fq -- '--post-swap' HEAD -- hermes_cli 2>/dev/null; then
+  target_supports_post_swap=1
+fi
+
+# Exclude tags that no longer resolve from the current remote (stale local tags
+# that remain after deletions). For update-route selection, also reject releases
+# whose updater is known to break while crossing into today's modular CLI.
+mapfile -t filtered_tags < <(
+  for tag in "${all_tags[@]}"; do
+    if printf '%s\n' "$remote_refs" | grep -Fxq "refs/tags/$tag"; then
+      if [ "$REQUIRE_UPDATE_COMPAT" -eq 1 ]; then
+        # This route must move forward from an earlier release to the candidate.
+        # Installer legs may still cover any live release, but invoking an old
+        # updater to move backward across incompatible CLI generations is not an
+        # update contract and caused both the missing-helper and post-swap
+        # failures this filter exists to prevent.
+        git -C "$REPO" merge-base --is-ancestor "$tag^{commit}" HEAD \
+          || continue
+
+        # Capture before grepping: `git show | grep -q` under pipefail falsely
+        # rejects large files when grep exits early and git receives SIGPIPE.
+        main_source="$(git -C "$REPO" show "$tag:hermes_cli/main.py" 2>/dev/null)" \
+          || continue
+        dashboard_source="$(git -C "$REPO" show "$tag:hermes_cli/dashboard_procs.py" 2>/dev/null || true)"
+        update_source="$(git -C "$REPO" show "$tag:hermes_cli/update_cmd.py" 2>/dev/null || true)"
+        main_dashboard_source="$(git -C "$REPO" show "$tag:hermes_cli/main_dashboard.py" 2>/dev/null || true)"
+
+        # Legacy releases did not restart dashboards and are valid updater
+        # coverage. Once a release references the helper, however, its binding
+        # must match the module that defines it; this rejects the historical
+        # missing-helper failure across the main.py → main_dashboard.py move.
+        if grep -Fq '_m()._restart_managed_dashboard_service' <<< "$dashboard_source"; then
+          grep -Fq 'def _restart_managed_dashboard_service' <<< "$main_source" \
+            || continue
+        elif grep -Fq '_dash._restart_managed_dashboard_service' <<< "$dashboard_source"; then
+          grep -Fq 'def _restart_managed_dashboard_service' <<< "$main_dashboard_source" \
+            || continue
+        elif git -C "$REPO" grep -Fq '_restart_managed_dashboard_service' "$tag" -- hermes_cli 2>/dev/null; then
+          continue
+        fi
+
+        # Releases that reloaded only the process-scan modules could import new
+        # source against stale siblings (for example cli_output without the new
+        # line_input symbol). Later releases purge stale Hermes modules first.
+        if grep -Fq '_reload_process_scan_modules' <<< "$update_source" \
+            && ! grep -Fq '_purge_stale_hermes_modules' <<< "$update_source"; then
+          continue
+        fi
+
+        # The newest historical updater hands off finalization by invoking the
+        # freshly-updated CLI with an internal --post-swap argument. A target
+        # predating that parser option cannot complete this update path.
+        if [ "$target_supports_post_swap" -eq 0 ] \
+            && git -C "$REPO" grep -Fq -- '--post-swap' "$tag" -- hermes_cli 2>/dev/null; then
+          continue
+        fi
+      fi
+      printf '%s\n' "$tag"
+    fi
+  done
+)
+
+tags=("${filtered_tags[@]}")
+
 total="${#tags[@]}"
 if [ "$total" -eq 0 ]; then
-  echo "error: no release tags found in $REPO" >&2
-  echo '       A shallow clone has no tags: fetch with tags (actions/checkout' >&2
-  echo '       with fetch-depth: 0, or fetch-tags: true).' >&2
+  echo "error: no eligible release tags found in $REPO" >&2
+  echo '       Fetch tags into the checkout and verify the authoritative remote.' >&2
+  exit 1
+fi
+if [ "$REQUIRE_COUNT" -eq 1 ] && [ "$total" -lt "$COUNT" ]; then
+  echo "error: only $total eligible release tags remain; requested $COUNT" >&2
   exit 1
 fi
 
