@@ -218,10 +218,13 @@ install_in_sandbox() {
 
   # Installer flags have to match the installer being run, not this checkout's.
   # Older releases reject options added later ("Unknown option: --skip-browser"),
-  # and this test deliberately installs releases from months back. --skip-setup
-  # goes back further than any tag we sample; anything newer is probed for.
-  local installer_flags=(--skip-setup)
-  if [ -z "$ref" ] || installer_supports "$ref" --skip-browser; then
+  # and this test deliberately installs releases from months back. Probe each
+  # optional flag against that release before passing it to the install script.
+  local installer_flags=()
+  if installer_supports "$ref" --skip-setup; then
+    installer_flags+=(--skip-setup)
+  fi
+  if installer_supports "$ref" --skip-browser; then
     installer_flags+=(--skip-browser)
   fi
   # Sandbox flags must precede `--`; the rest goes to install.sh.

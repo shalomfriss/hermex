@@ -34,6 +34,10 @@ COUNT=5
 # path so a symlinked or copied script still reads the checkout it lives in
 # rather than whatever repo the caller happens to be standing in.
 REPO=""
+# When true, require tags whose CLI update path exposes the dashboard restart
+# helper referenced by our installed-update E2E. Older tags that predate this
+# compatibility shim should be excluded from update-route coverage.
+REQUIRE_UPDATE_COMPAT=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --count)
@@ -42,6 +46,8 @@ while [ "$#" -gt 0 ]; do
     --repo)
       [ "$#" -ge 2 ] || { echo 'error: --repo needs a value' >&2; exit 1; }
       REPO="$2"; shift 2 ;;
+    --require-update-compat)
+      REQUIRE_UPDATE_COMPAT=1; shift ;;
     -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "error: unknown argument: $1" >&2; exit 1 ;;
   esac
@@ -66,18 +72,52 @@ fi
 
 # sort -V orders v2026.4.8 before v2026.4.13 (numeric), which a plain
 # lexicographic sort gets wrong.
-mapfile -t tags < <(
+mapfile -t all_tags < <(
   git -C "$REPO" tag --list 'v*' \
     | grep -E '^v[0-9]{4}\.[0-9]+\.[0-9]+(\.[0-9]+)?$' \
     | sort -V
 )
 
+# Exclude tags that no longer resolve from the current remote (stale local tags
+# that remain after deletions) and, for update-route selection, tags whose checked
+# out main.py does not yet provide the restart helper used by hermes update.
+mapfile -t filtered_tags < <(
+  for tag in "${all_tags[@]}"; do
+    if git -C "$REPO" ls-remote --exit-code --refs origin "refs/tags/$tag" >/dev/null 2>&1; then
+      if [ "$REQUIRE_UPDATE_COMPAT" -eq 1 ]; then
+        if ! git -C "$REPO" show "$tag:hermes_cli/main.py" | grep -q '_restart_managed_dashboard_service'; then
+          continue
+        fi
+      fi
+      printf '%s\n' "$tag"
+    fi
+  done
+)
+
+tags=("${filtered_tags[@]}")
+
 total="${#tags[@]}"
 if [ "$total" -eq 0 ]; then
-  echo "error: no release tags found in $REPO" >&2
-  echo '       A shallow clone has no tags: fetch with tags (actions/checkout' >&2
-  echo '       with fetch-depth: 0, or fetch-tags: true).' >&2
-  exit 1
+  if [ "$REQUIRE_UPDATE_COMPAT" -eq 1 ]; then
+    echo "warn: no tags passed update compatibility filter in $REPO; falling back to remote-resolved tags" >&2
+    mapfile -t tags < <(
+      for tag in "${all_tags[@]}"; do
+        git -C "$REPO" ls-remote --exit-code --refs origin "refs/tags/$tag" >/dev/null 2>&1 && printf '%s\n' "$tag" || true
+      done
+    )
+    total="${#tags[@]}"
+    [ "$total" -ne 0 ] || {
+      echo "error: no release tags found in $REPO" >&2
+      echo '       A shallow clone has no tags: fetch with tags (actions/checkout' >&2
+      echo '       with fetch-depth: 0, or fetch-tags: true).' >&2
+      exit 1
+    }
+  else
+    echo "error: no release tags found in $REPO" >&2
+    echo '       A shallow clone has no tags: fetch with tags (actions/checkout' >&2
+    echo '       with fetch-depth: 0, or fetch-tags: true).' >&2
+    exit 1
+  fi
 fi
 
 if [ "$total" -le "$COUNT" ]; then
