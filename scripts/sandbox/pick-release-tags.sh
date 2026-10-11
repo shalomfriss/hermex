@@ -95,6 +95,10 @@ remote_refs="$(git -C "$REPO" ls-remote --refs "$REMOTE" 'refs/tags/v*' | cut -f
   echo "error: could not list release tags from remote $REMOTE" >&2
   exit 1
 }
+target_supports_post_swap=0
+if git -C "$REPO" grep -Fq -- '--post-swap' HEAD -- hermes_cli 2>/dev/null; then
+  target_supports_post_swap=1
+fi
 
 # Exclude tags that no longer resolve from the current remote (stale local tags
 # that remain after deletions). For update-route selection, also reject releases
@@ -131,6 +135,14 @@ mapfile -t filtered_tags < <(
         # line_input symbol). Later releases purge stale Hermes modules first.
         if grep -Fq '_reload_process_scan_modules' <<< "$update_source" \
             && ! grep -Fq '_purge_stale_hermes_modules' <<< "$update_source"; then
+          continue
+        fi
+
+        # The newest historical updater hands off finalization by invoking the
+        # freshly-updated CLI with an internal --post-swap argument. A target
+        # predating that parser option cannot complete this update path.
+        if [ "$target_supports_post_swap" -eq 0 ] \
+            && git -C "$REPO" grep -Fq -- '--post-swap' "$tag" -- hermes_cli 2>/dev/null; then
           continue
         fi
       fi
