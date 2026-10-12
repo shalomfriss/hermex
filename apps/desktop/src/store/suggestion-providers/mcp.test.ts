@@ -11,6 +11,12 @@ const INDEX = [
 ]
 
 describe('matchSuggestions', () => {
+  it('uses Atlassian’s recommended v2 endpoint in the old-backend fallback', () => {
+    expect(MCP_DIRECTORY.find(entry => entry.name === 'atlassian')?.url).toBe(
+      'https://mcp.atlassian.com/v2/mcp'
+    )
+  })
+
   it('matches a whole word and reports the keyword that hit', () => {
     expect(matchSuggestions('can you check the linear board', INDEX)).toEqual([{ keyword: 'linear', server: 'linear' }])
   })

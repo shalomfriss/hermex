@@ -38,11 +38,11 @@ export interface McpDirectoryEntry {
 export const MCP_DIRECTORY: McpDirectoryEntry[] = [
   {
     description: 'Jira issues and Confluence pages via Atlassian’s hosted MCP.',
-    docs: 'https://support.atlassian.com/rovo/docs/getting-started-with-the-atlassian-remote-mcp-server/',
+    docs: 'https://support.atlassian.com/atlassian-ai-gateway/docs/get-started-with-the-atlassian-remote-mcp-server',
     hosts: ['atlassian.net', 'atlassian.com', 'jira.com'],
     keywords: ['jira', 'confluence', 'atlassian', 'bitbucket'],
     name: 'atlassian',
-    url: 'https://mcp.atlassian.com/v1/sse'
+    url: 'https://mcp.atlassian.com/v2/mcp'
   },
   {
     description: 'Find, create, and update Linear issues and projects.',
